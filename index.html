@@ -32,8 +32,10 @@
       padding-left: 84px; padding-right: 12px;
       -webkit-app-region: drag;
     }
-    .sb-title { font-size: 14px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
-    .sb-title span { display: block; font-size: 10px; font-weight: 400; color: var(--sub); }
+    .sb-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .sb-logo { width: 26px; height: 26px; flex: none; display: block; }
+    .sb-title { font-size: 14px; font-weight: 700; line-height: 1.2; white-space: nowrap; letter-spacing: .2px; }
+    .sb-title span { display: block; font-size: 10px; font-weight: 400; color: var(--sub); letter-spacing: 0; }
     .sb-list { flex: 1; overflow-y: auto; padding: 6px; }
     .sb-footer { flex: none; padding: 10px; border-top: 1px solid var(--line); }
 
@@ -88,7 +90,7 @@
     #sidebar { transition: none; }
     body.collapsed #sidebar { width: 88px; }
     body.collapsed .sb-header { padding: 0; }
-    body.collapsed .sb-title,
+    body.collapsed .sb-brand,
     body.collapsed .acc-info,
     body.collapsed .acc-hint,
     body.collapsed .acc-del,
@@ -137,7 +139,11 @@
       display: flex; align-items: center; justify-content: center;
     }
     .tb-btn:hover:not(:disabled) { background: #E9EFF9; }
-    #sbToggle svg { width: 18px; height: 18px; }
+    /* 去掉系统默认的橙色焦点环；键盘聚焦时用浅蓝底代替 */
+    button { outline: none; }
+    button:focus, button:focus-visible { outline: none; box-shadow: none; }
+    .tb-btn:focus-visible { background: #E9EFF9; }
+    .tb-btn svg { width: 18px; height: 18px; }
     .tb-btn:disabled { opacity: 0.35; cursor: default; }
     #urlInput {
       flex: 1; height: 32px; min-width: 0; border: 1px solid var(--line);
@@ -238,7 +244,14 @@
   <div id="app">
     <aside id="sidebar">
       <div class="sb-header">
-        <div class="sb-title">☁️ CloudDock<span>多账号浏览器</span></div>
+        <div class="sb-brand">
+          <svg class="sb-logo" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#0052D9"/>
+            <g fill="#fff" fill-opacity=".4" transform="translate(2.6 -2.6)"><circle cx="17" cy="15" r="4.4"/><circle cx="12.6" cy="16.8" r="3"/><circle cx="21.6" cy="17" r="2.6"/><rect x="10" y="16.2" width="14" height="4.4" rx="2.2"/></g>
+            <g fill="#fff"><circle cx="17" cy="15" r="4.4"/><circle cx="12.6" cy="16.8" r="3"/><circle cx="21.6" cy="17" r="2.6"/><rect x="10" y="16.2" width="14" height="4.4" rx="2.2"/></g>
+          </svg>
+          <div class="sb-title">CloudDock<span>多账号浏览器</span></div>
+        </div>
       </div>
       <div id="accountList" class="sb-list"></div>
       <div id="sbFooter" class="sb-footer">
@@ -251,10 +264,10 @@
         <button id="sbToggle" class="tb-btn" title="收起 / 展开侧边栏 (⌘B)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.5" y1="4" x2="9.5" y2="20"/></svg>
         </button>
-        <button id="navBack" class="tb-btn" title="后退 (⌘[)">‹</button>
-        <button id="navFwd" class="tb-btn" title="前进 (⌘])">›</button>
-        <button id="navReload" class="tb-btn" title="刷新 (⌘R)">⟳</button>
-        <button id="navHome" class="tb-btn" title="账号首页">⌂</button>
+        <button id="navBack" class="tb-btn" title="后退 (⌘[)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="14.5 6 8.5 12 14.5 18"/></svg></button>
+        <button id="navFwd" class="tb-btn" title="前进 (⌘])"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="9.5 6 15.5 12 9.5 18"/></svg></button>
+        <button id="navReload" class="tb-btn" title="刷新 (⌘R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12a7.5 7.5 0 1 1-2.4-5.5"/><polyline points="19.8 4.2 19.5 8.6 15.1 8.3"/></svg></button>
+        <button id="navHome" class="tb-btn" title="账号首页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.2 12 4.5l8 6.7"/><path d="M6 10.2V19a1 1 0 0 0 1 1h3.5v-5h3v5H17a1 1 0 0 0 1-1v-8.8"/></svg></button>
         <input id="urlInput" placeholder="输入网址或搜索内容" spellcheck="false">
         <div id="activeBadge"></div>
       </div>
