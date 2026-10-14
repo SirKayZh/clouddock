@@ -1,0 +1,21 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 云形：三个圆 + 圆角底板 -->
+    <g id="cloud">
+      <circle cx="530" cy="460" r="120"/>
+      <circle cx="430" cy="500" r="78"/>
+      <circle cx="615" cy="505" r="68"/>
+      <rect x="345" y="495" width="345" height="110" rx="55"/>
+    </g>
+  </defs>
+
+  <!-- macOS squircle 底板（纯色无渐变） -->
+  <rect x="102" y="102" width="820" height="820" rx="190" fill="#0052D9"/>
+
+  <!-- 后层云（错位层叠 = 多账号/多会话） -->
+  <use href="#cloud" transform="translate(112,-112)" fill="#FFFFFF" fill-opacity="0.16"/>
+  <use href="#cloud" transform="translate(56,-56)" fill="#FFFFFF" fill-opacity="0.38"/>
+
+  <!-- 前层云 -->
+  <use href="#cloud" fill="#FFFFFF"/>
+</svg>

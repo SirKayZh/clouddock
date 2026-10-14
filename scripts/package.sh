@@ -36,10 +36,13 @@ echo "==> 组装 .app"
 cp -R "$ELECTRON_APP" "$APP"
 mkdir -p "$APP/Contents/Resources/app"
 cp -R package.json dist index.html renderer.js README.md "$APP/Contents/Resources/app/"
+# App 图标（assets/gen_icon.py 生成）
+cp assets/clouddock.icns "$APP/Contents/Resources/clouddock.icns"
 plutil -replace CFBundleName -string "CloudDock" "$APP/Contents/Info.plist"
 plutil -replace CFBundleDisplayName -string "CloudDock" "$APP/Contents/Info.plist"
 plutil -replace CFBundleIdentifier -string "com.dylanzheng.clouddock" "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleIconFile -string "clouddock.icns" "$APP/Contents/Info.plist"
 
 echo "==> ad-hoc 签名"
 codesign --force --deep --sign - "$APP"
