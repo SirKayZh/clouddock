@@ -7,17 +7,20 @@ import {
   shell,
   Menu,
   dialog,
+  safeStorage,
 } from 'electron';
 import type { Rectangle, WebContents, Session, MenuItemConstructorOptions } from 'electron';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import type { Account, AppState, Tab } from './types';
+import type { Account, AppState, CapturedLogin, FillPayload, PendingSave, Tab } from './types';
 
 const HOME_URL = 'https://console.cloud.tencent.com/';
 const SIDEBAR_W = 232;
 const TOPBAR_H = 52;
 const TABBAR_H = 36;
+/** 「保存登录信息」提示条高度（与 index.html #banner 一致） */
+const BANNER_H = 40;
 const PALETTE = [
   '#0052D9', '#00A870', '#ED7B2F', '#7B61FF',
   '#E3737B', '#029BE5', '#B58A00', '#2E7D32',
@@ -45,9 +48,9 @@ function uiFile(): string {
 }
 
 /** 原子写：先写临时文件再 rename，避免崩溃/断电写一半导致账号列表损坏丢失 */
-function writeFileAtomic(file: string, content: string): void {
+function writeFileAtomic(file: string, content: string, mode?: number): void {
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, content, 'utf-8');
+  fs.writeFileSync(tmp, content, mode === undefined ? { encoding: 'utf-8' } : { encoding: 'utf-8', mode });
   fs.renameSync(tmp, file);
 }
 
@@ -146,6 +149,271 @@ function pickColor(): string {
   return PALETTE.reduce((best, c) => ((used.get(c) ?? 0) < (used.get(best) ?? 0) ? c : best), PALETTE[0]);
 }
 
+/* ---------- 密码管理（行为对齐 Chrome） ---------- */
+/*
+ *  - 任意网站登录成功后询问「保存 / 更新密码」，可选「从不保存此网站」
+ *  - 已保存的网站再次打开登录页时自动填充（同一网站多个用户名时填最近使用的）
+ *  - 凭据按「账号(会话分区) + 网站 origin + 用户名」存储：账号之间互不可见；只会填充到与保存时完全相同 origin 的页面/iframe
+ *  - 安全：密码用系统钥匙串加密（safeStorage），磁盘只存密文；加密不可用时功能自动关闭，绝不明文落盘；密码永不下发到界面进程
+ *  - 管理入口：菜单「密码」（查看/删除/恢复提示），不占用主界面
+ */
+
+interface CredEntry {
+  id: string;
+  accountId: string;
+  origin: string;
+  /** 展示用用户名（非敏感），如「10001 / alice」 */
+  label: string;
+  /** base64(safeStorage 密文)：JSON { fields, password } */
+  enc: string;
+  updatedAt: number;
+}
+interface NeverSave {
+  accountId: string;
+  origin: string;
+}
+interface CredStore {
+  entries: CredEntry[];
+  never: NeverSave[];
+}
+
+let credStore: CredStore = { entries: [], never: [] };
+const MAX_ENTRIES_PER_ACCOUNT = 500;
+
+/** 与 Chrome 一致：http/https 页面均可；以 origin（协议+主机+端口）精确绑定 */
+function credOrigin(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+function credFile(): string {
+  return path.join(app.getPath('userData'), 'credentials.json');
+}
+
+function credAvailable(): boolean {
+  try {
+    return safeStorage.isEncryptionAvailable();
+  } catch {
+    return false;
+  }
+}
+
+function loadCreds(): void {
+  const file = credFile();
+  credStore = { entries: [], never: [] };
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<CredStore>;
+    const seen = new Set<string>();
+    for (const r of Array.isArray(data.entries) ? data.entries : []) {
+      if (!r || typeof r !== 'object') continue;
+      if (typeof r.id !== 'string' || seen.has(r.id)) continue;
+      if (typeof r.accountId !== 'string' || typeof r.origin !== 'string') continue;
+      if (typeof r.enc !== 'string' || typeof r.label !== 'string') continue;
+      seen.add(r.id);
+      credStore.entries.push({
+        id: r.id,
+        accountId: r.accountId,
+        origin: r.origin,
+        label: r.label.slice(0, 120),
+        enc: r.enc,
+        updatedAt: typeof r.updatedAt === 'number' ? r.updatedAt : 0,
+      });
+    }
+    for (const n of Array.isArray(data.never) ? data.never : []) {
+      if (n && typeof n.accountId === 'string' && typeof n.origin === 'string') {
+        credStore.never.push({ accountId: n.accountId, origin: n.origin });
+      }
+    }
+  } catch {
+    if (fs.existsSync(file)) {
+      try {
+        fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  // 清理已不存在账号的残留
+  credStore.entries = credStore.entries.filter((e) => accounts.some((a) => a.id === e.accountId));
+  credStore.never = credStore.never.filter((n) => accounts.some((a) => a.id === n.accountId));
+}
+
+function saveCreds(): void {
+  try {
+    const file = credFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeFileAtomic(file, JSON.stringify(credStore, null, 2), 0o600);
+  } catch (err) {
+    console.error('[clouddock] save credentials failed:', err);
+  }
+}
+
+function decryptEntry(e: CredEntry): FillPayload | null {
+  if (!credAvailable()) return null;
+  try {
+    const obj = JSON.parse(safeStorage.decryptString(Buffer.from(e.enc, 'base64'))) as Partial<FillPayload>;
+    if (!Array.isArray(obj.fields) || typeof obj.password !== 'string') return null;
+    return { fields: obj.fields.map(String), password: obj.password };
+  } catch {
+    return null; // 钥匙串变化/密文损坏：当作未保存
+  }
+}
+
+function entriesFor(accountId: string, origin: string): CredEntry[] {
+  return credStore.entries
+    .filter((e) => e.accountId === accountId && e.origin === origin)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function isNever(accountId: string, origin: string): boolean {
+  return credStore.never.some((n) => n.accountId === accountId && n.origin === origin);
+}
+
+interface RawPending {
+  accountId: string;
+  login: CapturedLogin;
+  origin: string;
+  /** 非空 = 同一用户名已有保存记录，本次是更新密码 */
+  existingId: string | null;
+  tabId: string;
+  ts: number;
+  /** 登录页发生导航后才置 true（视为登录成功），此时才向用户展示保存提示 */
+  armed: boolean;
+}
+let pending: RawPending | null = null;
+/** 登录成功的跳转通常在提交后数秒内发生；超时视为登录失败/用户已离开 */
+const PENDING_TTL = 15_000;
+
+/** webContents.id -> 所属账号/标签（用于校验 IPC 发送方） */
+const wcMap = new Map<number, { acc: Account; tab: Tab }>();
+
+function credLabel(fields: string[]): string {
+  return fields.filter(Boolean).join(' / ').slice(0, 120);
+}
+
+function onCaptured(wcId: number, frameUrl: string | undefined, raw: unknown): void {
+  const ctx = wcMap.get(wcId);
+  if (!ctx || !accounts.includes(ctx.acc)) return;
+  const origin = credOrigin(frameUrl);
+  if (!origin || !credAvailable() || isNever(ctx.acc.id, origin)) return;
+  const r = raw as Partial<CapturedLogin> | null;
+  if (!r || !Array.isArray(r.fields) || typeof r.password !== 'string') return;
+  const fields = r.fields.filter((f): f is string => typeof f === 'string').map((f) => f.slice(0, 200));
+  if (fields.length === 0 || fields.length > 5 || !r.password || r.password.length > 256) return;
+
+  // 同一用户名已有记录？密码也相同 → 不打扰；密码不同 → 提示「更新」
+  let existingId: string | null = null;
+  for (const e of entriesFor(ctx.acc.id, origin)) {
+    const saved = decryptEntry(e);
+    if (saved && JSON.stringify(saved.fields) === JSON.stringify(fields)) {
+      if (saved.password === r.password) return;
+      existingId = e.id;
+      break;
+    }
+  }
+  const hadBanner = !!pending?.armed;
+  pending = {
+    accountId: ctx.acc.id,
+    login: { fields, password: r.password },
+    origin,
+    existingId,
+    tabId: ctx.tab.id,
+    ts: Date.now(),
+    armed: false,
+  };
+  if (hadBanner) {
+    layoutViews();
+    sendState();
+  }
+}
+
+/** 登录页发生导航 = 很可能登录成功，此时再弹提示（输错密码的页面通常不会跳转） */
+function armPending(tabId: string): void {
+  if (!pending || pending.armed || pending.tabId !== tabId) return;
+  if (Date.now() - pending.ts > PENDING_TTL) {
+    pending = null;
+    return;
+  }
+  pending.armed = true;
+  layoutViews();
+  sendState();
+}
+
+/** 用户主动导航（地址栏/后退/刷新/首页）不应被当作「登录成功跳转」，丢弃尚未确认的捕获 */
+function dropUnarmedPending(): void {
+  if (pending && !pending.armed) pending = null;
+}
+
+function clearPending(): void {
+  const had = !!pending?.armed;
+  pending = null;
+  if (had) layoutViews();
+}
+
+function hostOf(origin: string): string {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return origin;
+  }
+}
+
+function pendingForUi(): PendingSave | null {
+  if (!pending?.armed) return null;
+  return {
+    accountId: pending.accountId,
+    label: credLabel(pending.login.fields),
+    host: hostOf(pending.origin),
+    update: pending.existingId !== null,
+  };
+}
+
+function dropAccountCreds(id: string): void {
+  credStore.entries = credStore.entries.filter((e) => e.accountId !== id);
+  credStore.never = credStore.never.filter((n) => n.accountId !== id);
+  if (pending?.accountId === id) clearPending();
+  saveCreds();
+}
+
+async function deleteCredEntry(entryId: string): Promise<void> {
+  const e = credStore.entries.find((x) => x.id === entryId);
+  if (!e || !win) return;
+  const choice = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['删除', '取消'],
+    defaultId: 1,
+    cancelId: 1,
+    message: `删除已保存的密码？`,
+    detail: `${hostOf(e.origin)} — ${e.label}`,
+  });
+  if (choice.response !== 0) return;
+  credStore.entries = credStore.entries.filter((x) => x.id !== entryId);
+  saveCreds();
+  sendState();
+}
+
+async function clearAccountCreds(accountId: string): Promise<void> {
+  const acc = accounts.find((a) => a.id === accountId);
+  if (!acc || !win) return;
+  const choice = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['全部清除', '取消'],
+    defaultId: 1,
+    cancelId: 1,
+    message: `清除账号「${acc.name}」的全部已保存密码？`,
+    detail: '同时会恢复该账号所有「从不保存」的网站。',
+  });
+  if (choice.response !== 0) return;
+  dropAccountCreds(accountId);
+  sendState();
+}
+
 /* ---------- 账号 / 标签页模型 ---------- */
 
 function newTabRecord(url = HOME_URL, title = ''): Tab {
@@ -204,11 +472,12 @@ function applyPermissionPolicy(ses: Session): void {
 function viewBounds(): Rectangle {
   if (!win) return { x: 0, y: 0, width: 0, height: 0 };
   const [cw, ch] = win.getContentSize();
+  const top = TOPBAR_H + TABBAR_H + (pending?.armed ? BANNER_H : 0);
   return {
     x: SIDEBAR_W,
-    y: TOPBAR_H + TABBAR_H,
+    y: top,
     width: Math.max(0, cw - SIDEBAR_W),
-    height: Math.max(0, ch - TOPBAR_H - TABBAR_H),
+    height: Math.max(0, ch - top),
   };
 }
 
@@ -236,7 +505,9 @@ function sendState(): void {
     canGoBack: wc ? wc.navigationHistory.canGoBack() : false,
     canGoForward: wc ? wc.navigationHistory.canGoForward() : false,
     isLoading: wc ? wc.isLoading() : false,
+    pending: pendingForUi(),
   };
+  refreshMenuIfNeeded();
   win.webContents.send('state:update', state);
 }
 
@@ -254,9 +525,14 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
       session: ses,
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      // 登录框常在跨域 iframe 内（如腾讯云登录页），预加载脚本需覆盖子 frame
+      nodeIntegrationInSubFrames: true,
+      preload: path.join(__dirname, 'pagePreload.js'),
     },
   });
   const wc = view.webContents;
+  wcMap.set(wc.id, { acc, tab });
 
   // target=_blank / window.open：在【同一账号】内开新标签，共享登录态。
   // 若交给系统浏览器，会丢失该账号的会话（落到别的账号或未登录）。
@@ -307,11 +583,13 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
   });
   wc.on('did-navigate', () => {
     tab.url = wc.getURL();
+    armPending(tab.id);
     scheduleSave();
     refresh();
   });
-  wc.on('did-navigate-in-page', () => {
+  wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => {
     tab.url = wc.getURL();
+    if (isMainFrame) armPending(tab.id);
     scheduleSave();
     refresh();
   });
@@ -349,6 +627,8 @@ function destroyTabView(tabId: string): void {
   if (!view) return;
   if (win) win.contentView.removeChildView(view);
   views.delete(tabId);
+  wcMap.delete(view.webContents.id);
+  if (pending && !pending.armed && pending.tabId === tabId) pending = null;
   view.webContents.close();
 }
 
@@ -455,6 +735,7 @@ async function removeAccount(id: string): Promise<boolean> {
   if (cur < 0) return false;
   accounts.splice(cur, 1);
   for (const t of acc.tabs) destroyTabView(t.id);
+  dropAccountCreds(id);
 
   // 先切走并刷新 UI，再清理数据：清理可能耗时，避免界面卡在已删除账号上
   if (activeId === id) {
@@ -517,6 +798,79 @@ function registerIpc(): void {
 
   ipcMain.handle('accounts:switch', (_e, id: unknown): boolean => switchAccount(String(id)));
 
+  /* ----- 密码管理 ----- */
+  // 页面注入脚本 -> 主进程：发送方必须是账号标签页里的 http(s) 页面
+  ipcMain.on('cred:captured', (e, raw: unknown) => {
+    if (!credOrigin(e.sender.getURL())) return;
+    onCaptured(e.sender.id, e.senderFrame?.url, raw);
+  });
+
+  // 只回给【origin 与保存时完全一致】的页面/iframe；顶层页面也必须是 http(s)
+  ipcMain.handle('cred:get', (e): FillPayload | null => {
+    const ctx = wcMap.get(e.sender.id);
+    if (!ctx || !accounts.includes(ctx.acc)) return null;
+    const origin = credOrigin(e.senderFrame?.url);
+    if (!origin || !credOrigin(e.sender.getURL())) return null;
+    const best = entriesFor(ctx.acc.id, origin)[0];
+    return best ? decryptEntry(best) : null;
+  });
+
+  // 以下来自界面进程（preload 暴露的 api），只接受主窗口
+  const fromUi = (e: Electron.IpcMainInvokeEvent): boolean => !!win && e.sender === win.webContents;
+
+  ipcMain.handle('cred:save', (e): boolean => {
+    if (!fromUi(e) || !pending?.armed || !credAvailable()) return false;
+    const p = pending;
+    const acc = accounts.find((a) => a.id === p.accountId);
+    if (!acc) {
+      clearPending();
+      sendState();
+      return false;
+    }
+    try {
+      const enc = safeStorage.encryptString(JSON.stringify(p.login)).toString('base64');
+      const now = Date.now();
+      const exist = p.existingId ? credStore.entries.find((x) => x.id === p.existingId) : undefined;
+      if (exist) {
+        exist.enc = enc;
+        exist.updatedAt = now;
+      } else {
+        credStore.entries.push({
+          id: randomBytes(8).toString('hex'),
+          accountId: acc.id,
+          origin: p.origin,
+          label: credLabel(p.login.fields),
+          enc,
+          updatedAt: now,
+        });
+        // 单账号上限：淘汰最旧的
+        const mine = credStore.entries.filter((x) => x.accountId === acc.id).sort((a, b) => a.updatedAt - b.updatedAt);
+        for (const old of mine.slice(0, Math.max(0, mine.length - MAX_ENTRIES_PER_ACCOUNT))) {
+          credStore.entries = credStore.entries.filter((x) => x.id !== old.id);
+        }
+      }
+      saveCreds();
+    } catch (err) {
+      console.error('[clouddock] encrypt credentials failed:', err);
+      return false;
+    }
+    clearPending();
+    sendState();
+    return true;
+  });
+
+  // never=true：从不保存此网站（对应账号 + origin）
+  ipcMain.handle('cred:dismiss', (e, never: unknown): boolean => {
+    if (!fromUi(e) || !pending) return false;
+    if (never === true && !isNever(pending.accountId, pending.origin)) {
+      credStore.never.push({ accountId: pending.accountId, origin: pending.origin });
+      saveCreds();
+    }
+    clearPending();
+    sendState();
+    return true;
+  });
+
   ipcMain.handle('tabs:new', (_e, url: unknown): boolean => {
     const acc = activeAccount() ?? accounts[0];
     if (!acc) return false;
@@ -531,6 +885,7 @@ function registerIpc(): void {
   ipcMain.handle('nav:action', (_e, action: unknown): void => {
     const wc = activeWc();
     if (!wc) return;
+    dropUnarmedPending();
     switch (String(action)) {
       case 'back':
         wc.goBack();
@@ -555,6 +910,7 @@ function registerIpc(): void {
   ipcMain.handle('nav:url', (_e, raw: unknown): boolean => {
     const wc = activeWc();
     if (!wc) return false;
+    dropUnarmedPending();
     let url = String(raw ?? '').trim();
     if (!url) return false;
     if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
@@ -571,7 +927,63 @@ function registerIpc(): void {
 
 /* ---------- 菜单 ---------- */
 
+/** 「密码」菜单：列出当前账号已保存的密码（点击删除），恢复「从不保存」，全部清除 */
+function passwordMenu(): MenuItemConstructorOptions {
+  const acc = activeAccount();
+  const mine = acc ? credStore.entries.filter((e) => e.accountId === acc.id).sort((a, b) => b.updatedAt - a.updatedAt) : [];
+  const neverCount = acc ? credStore.never.filter((n) => n.accountId === acc.id).length : 0;
+  const MAX_SHOW = 30;
+  const items: MenuItemConstructorOptions[] = [
+    { label: acc ? `「${acc.name}」已保存的密码（点击删除）` : '请先选择账号', enabled: false },
+    ...(mine.length === 0
+      ? [{ label: '（暂无）', enabled: false } as MenuItemConstructorOptions]
+      : mine.slice(0, MAX_SHOW).map(
+          (e): MenuItemConstructorOptions => ({
+            label: `${hostOf(e.origin)} — ${e.label}`.slice(0, 80),
+            click: () => void deleteCredEntry(e.id),
+          }),
+        )),
+    ...(mine.length > MAX_SHOW ? [{ label: `…另有 ${mine.length - MAX_SHOW} 条`, enabled: false } as MenuItemConstructorOptions] : []),
+    { type: 'separator' },
+    {
+      label: `恢复「从不保存」的网站（${neverCount}）`,
+      enabled: neverCount > 0,
+      click: () => {
+        if (!acc) return;
+        credStore.never = credStore.never.filter((n) => n.accountId !== acc.id);
+        saveCreds();
+        sendState();
+      },
+    },
+    {
+      label: '清除当前账号全部已保存密码…',
+      enabled: !!acc && (mine.length > 0 || neverCount > 0),
+      click: () => {
+        if (acc) void clearAccountCreds(acc.id);
+      },
+    },
+  ];
+  return { label: '密码', submenu: items };
+}
+
+let menuSig = '';
+/** 当前账号 / 已存密码变化时才重建菜单（sendState 很频繁） */
+function refreshMenuIfNeeded(): void {
+  const sig = JSON.stringify([
+    activeId,
+    credStore.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
+    credStore.never.filter((n) => n.accountId === activeId).length,
+  ]);
+  if (sig === menuSig) return;
+  buildMenu();
+}
+
 function buildMenu(): void {
+  menuSig = JSON.stringify([
+    activeId,
+    credStore.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
+    credStore.never.filter((n) => n.accountId === activeId).length,
+  ]);
   const zoom = (delta: number): void => {
     const wc = activeWc();
     if (!wc) return;
@@ -624,6 +1036,7 @@ function buildMenu(): void {
         { label: '下一个标签页', accelerator: 'CmdOrCtrl+Shift+]', click: () => cycleTab(1) },
       ],
     },
+    passwordMenu(),
     // 不用 role:'windowMenu'：它自带「关闭窗口 ⌘W」，会与「关闭标签页 ⌘W」抢快捷键
     {
       label: '窗口',
@@ -692,6 +1105,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     loadAccounts();
+    loadCreds();
     registerIpc();
     buildMenu();
     applyPermissionPolicy(session.defaultSession);

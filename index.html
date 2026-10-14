@@ -132,6 +132,18 @@
 
     #content { flex: 1; position: relative; }
 
+    /* ---------- 保存登录信息提示条（高度须与主进程 BANNER_H=40 一致） ---------- */
+    #banner {
+      height: 40px; flex: none; display: none; align-items: center; gap: 10px;
+      padding: 0 12px; background: #FFF8E6; border-bottom: 1px solid #F3E2B3;
+      font-size: 12px; color: #6B5300;
+    }
+    #banner .bn-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #banner .bn-text b { color: #3D2F00; }
+    #banner .btn { height: 26px; padding: 0 12px; }
+    #banner .btn.link { border: none; background: transparent; color: #8A7A3F; }
+    #banner .btn.link:hover { color: #6B5300; text-decoration: underline; }
+
     /* ---------- 标签栏 ---------- */
     #tabbar {
       height: 36px; flex: none; display: flex; align-items: center;
@@ -207,6 +219,7 @@
         <div id="tablist"></div>
         <button id="tabNew" class="tab-new" title="新建标签页 (⌘T)">＋</button>
       </div>
+      <div id="banner"></div>
       <div id="content">
         <div id="empty">
           <div class="empty-card">

@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('api', {
   nav: (action: 'back' | 'forward' | 'reload' | 'stop' | 'home'): Promise<void> =>
     ipcRenderer.invoke('nav:action', action),
   openUrl: (url: string): Promise<boolean> => ipcRenderer.invoke('nav:url', url),
+  credSave: (): Promise<boolean> => ipcRenderer.invoke('cred:save'),
+  credDismiss: (never: boolean): Promise<boolean> => ipcRenderer.invoke('cred:dismiss', never),
   onState: (cb: (state: AppState) => void): void => {
     ipcRenderer.on('state:update', (_event, state: AppState) => cb(state));
   },

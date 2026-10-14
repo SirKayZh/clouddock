@@ -14,6 +14,7 @@ const els = {
   tabbar: document.getElementById('tabbar'),
   tablist: document.getElementById('tablist'),
   tabNew: document.getElementById('tabNew'),
+  banner: document.getElementById('banner'),
 };
 
 let state = {
@@ -25,6 +26,7 @@ let state = {
   canGoBack: false,
   canGoForward: false,
   isLoading: false,
+  pending: null,
 };
 let editing = false; // 添加/重命名进行中时跳过列表重渲染
 
@@ -50,6 +52,7 @@ async function selectAccount(id) {
 function render() {
   renderToolbar();
   renderTabbar();
+  renderBanner();
   if (!editing) renderList();
   els.empty.style.display = state.accounts.length === 0 ? 'flex' : 'none';
 }
@@ -97,6 +100,31 @@ function renderTabbar() {
   if (activeEl) activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
+let bannerSig = '';
+
+function renderBanner() {
+  const p = state.pending;
+  const sig = JSON.stringify(p);
+  if (sig === bannerSig) return;
+  bannerSig = sig;
+  if (!p) {
+    els.banner.style.display = 'none';
+    els.banner.innerHTML = '';
+    return;
+  }
+  const acc = state.accounts.find((a) => a.id === p.accountId);
+  const name = acc ? acc.name : '该账号';
+  els.banner.style.display = 'flex';
+  els.banner.innerHTML = `
+    <span class="bn-text">🔑 ${p.update ? '更新' : '保存'}密码？<b>${escapeHtml(p.host)}</b> · ${escapeHtml(p.label)}（账号「${escapeHtml(name)}」，加密存于本机）</span>
+    <button class="btn primary" id="bnSave">${p.update ? '更新密码' : '保存'}</button>
+    <button class="btn link" id="bnLater">暂不</button>
+    <button class="btn link" id="bnNever">从不保存此网站</button>`;
+  els.banner.querySelector('#bnSave').addEventListener('click', () => window.api.credSave());
+  els.banner.querySelector('#bnLater').addEventListener('click', () => window.api.credDismiss(false));
+  els.banner.querySelector('#bnNever').addEventListener('click', () => window.api.credDismiss(true));
+}
+
 function renderToolbar() {
   els.back.disabled = !state.canGoBack;
   els.fwd.disabled = !state.canGoForward;
@@ -113,7 +141,13 @@ function renderToolbar() {
   }
 }
 
+let listSig = '';
+
 function renderList() {
+  // 签名未变则不重建，避免页面加载期间的频繁状态推送吞掉点击
+  const sig = JSON.stringify([state.activeId, state.accounts.map((a) => [a.id, a.name, a.note, a.color])]);
+  if (sig === listSig && els.list.childElementCount > 0) return;
+  listSig = sig;
   els.list.innerHTML = '';
   state.accounts.forEach((acc, i) => {
     const item = document.createElement('div');
