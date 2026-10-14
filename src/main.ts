@@ -40,10 +40,26 @@ function accountsFile(): string {
   return path.join(app.getPath('userData'), 'accounts.json');
 }
 
+function uiFile(): string {
+  return path.join(app.getPath('userData'), 'ui.json');
+}
+
+/** 原子写：先写临时文件再 rename，避免崩溃/断电写一半导致账号列表损坏丢失 */
+function writeFileAtomic(file: string, content: string): void {
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, content, 'utf-8');
+  fs.renameSync(tmp, file);
+}
+
 function saveAccountsNow(): void {
-  const file = accountsFile();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(accounts, null, 2), 'utf-8');
+  try {
+    const file = accountsFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeFileAtomic(file, JSON.stringify(accounts, null, 2));
+    if (activeId) writeFileAtomic(uiFile(), JSON.stringify({ activeId }));
+  } catch (err) {
+    console.error('[clouddock] save failed:', err);
+  }
 }
 
 let saveTimer: NodeJS.Timeout | null = null;
@@ -56,19 +72,78 @@ function scheduleSave(): void {
   }, 500);
 }
 
-function loadAccounts(): void {
-  try {
-    const data: unknown = JSON.parse(fs.readFileSync(accountsFile(), 'utf-8'));
-    if (Array.isArray(data)) {
-      accounts = data.filter(
-        (a): a is Account =>
-          !!a && typeof (a as Account).id === 'string' && typeof (a as Account).name === 'string',
-      );
+function isHttpUrl(u: unknown): u is string {
+  return typeof u === 'string' && /^https?:\/\//i.test(u);
+}
+
+/** 对磁盘读入的数据做结构/类型校验，脏数据不会拖垮渲染或会话分区 */
+function sanitizeAccount(raw: unknown): Account | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const a = raw as Partial<Account>;
+  if (typeof a.id !== 'string' || !/^[\w-]{1,64}$/.test(a.id)) return null;
+  if (typeof a.name !== 'string') return null;
+  const seen = new Set<string>();
+  const tabs: Tab[] = [];
+  if (Array.isArray(a.tabs)) {
+    for (const t of a.tabs as unknown[]) {
+      if (!t || typeof t !== 'object') continue;
+      const tt = t as Partial<Tab>;
+      if (typeof tt.id !== 'string' || !tt.id || seen.has(tt.id)) continue;
+      seen.add(tt.id);
+      tabs.push({
+        id: tt.id,
+        url: isHttpUrl(tt.url) ? tt.url : HOME_URL,
+        title: typeof tt.title === 'string' ? tt.title : '',
+      });
     }
-  } catch {
+  }
+  return {
+    id: a.id,
+    name: a.name.slice(0, 30) || '未命名',
+    note: typeof a.note === 'string' ? a.note.slice(0, 60) : '',
+    color: typeof a.color === 'string' && /^#[0-9a-f]{6}$/i.test(a.color) ? a.color : PALETTE[0],
+    createdAt: typeof a.createdAt === 'number' ? a.createdAt : Date.now(),
+    tabs,
+    activeTabId: typeof a.activeTabId === 'string' ? a.activeTabId : null,
+  };
+}
+
+let savedActiveId: string | null = null;
+
+function loadAccounts(): void {
+  const file = accountsFile();
+  try {
+    const data: unknown = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (Array.isArray(data)) {
+      accounts = data.map(sanitizeAccount).filter((a): a is Account => a !== null);
+    }
+  } catch (err) {
     accounts = [];
+    // 文件存在但解析失败：备份损坏文件，避免下次保存时被空列表覆盖而永久丢失
+    if (fs.existsSync(file)) {
+      try {
+        fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`);
+      } catch {
+        /* ignore */
+      }
+      console.error('[clouddock] accounts.json 解析失败，已备份:', err);
+    }
   }
   for (const acc of accounts) ensureAccountTabs(acc);
+  try {
+    const ui: unknown = JSON.parse(fs.readFileSync(uiFile(), 'utf-8'));
+    const id = (ui as { activeId?: unknown }).activeId;
+    savedActiveId = typeof id === 'string' ? id : null;
+  } catch {
+    savedActiveId = null;
+  }
+}
+
+/** 选一个当前使用最少的配色，避免删除账号后颜色重复 */
+function pickColor(): string {
+  const used = new Map<string, number>();
+  for (const a of accounts) used.set(a.color, (used.get(a.color) ?? 0) + 1);
+  return PALETTE.reduce((best, c) => ((used.get(c) ?? 0) < (used.get(best) ?? 0) ? c : best), PALETTE[0]);
 }
 
 /* ---------- 账号 / 标签页模型 ---------- */
@@ -183,24 +258,53 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
   });
   const wc = view.webContents;
 
-  wc.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) void shell.openExternal(url);
+  // target=_blank / window.open：在【同一账号】内开新标签，共享登录态。
+  // 若交给系统浏览器，会丢失该账号的会话（落到别的账号或未登录）。
+  wc.setWindowOpenHandler(({ url, disposition }) => {
+    if (/^https?:/i.test(url)) {
+      const isCurrent = activeId === acc.id && acc.activeTabId === tab.id;
+      const activate = disposition !== 'background-tab' && isCurrent;
+      // 异步执行，避免在 handler 回调里同步改动视图
+      setImmediate(() => {
+        if (accounts.includes(acc)) newTabForAccount(acc, url, activate);
+      });
+    } else if (/^mailto:/i.test(url)) {
+      void shell.openExternal(url);
+    }
     return { action: 'deny' };
   });
 
   // ⌘1~⌘9 切换账号（仅拦截数字键，其余交给应用菜单）
-  wc.on('before-input-event', (_event, input) => {
+  wc.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || !input.meta) return;
     const m = /^Digit([1-9])$/.exec(input.code);
     if (m) {
       const target = accounts[Number(m[1]) - 1];
-      if (target) switchAccount(target.id);
+      if (target) {
+        event.preventDefault();
+        switchAccount(target.id);
+      }
     }
   });
 
+  // 同账号下任一 tab（含后台 tab）的标题/加载状态变化都需要刷新标签栏
   const refresh = (): void => {
-    if (tab.id === activeTab()?.id) sendState();
+    if (activeId === acc.id) sendState();
   };
+
+  // 渲染进程崩溃自动恢复（连续崩溃 3 次后放弃，避免死循环）
+  let crashCount = 0;
+  wc.on('render-process-gone', (_e, details) => {
+    if (details.reason === 'clean-exit' || details.reason === 'killed') return;
+    crashCount += 1;
+    if (crashCount > 3) return;
+    setTimeout(() => {
+      if (!wc.isDestroyed()) wc.reload();
+    }, 500);
+  });
+  wc.on('did-finish-load', () => {
+    crashCount = 0;
+  });
   wc.on('did-navigate', () => {
     tab.url = wc.getURL();
     scheduleSave();
@@ -225,8 +329,15 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
     view.setBounds(viewBounds());
     view.setVisible(false);
   }
-  void wc.loadURL(tab.url || HOME_URL);
+  safeLoad(wc, isHttpUrl(tab.url) ? tab.url : HOME_URL);
   return view;
+}
+
+/** loadURL 在被新导航打断（ERR_ABORTED）等情况下会 reject，吞掉避免 unhandled rejection */
+function safeLoad(wc: WebContents, url: string): void {
+  wc.loadURL(url).catch(() => {
+    /* 导航被打断/失败：错误页由 Chromium 自行展示 */
+  });
 }
 
 function ensureTabView(acc: Account, tab: Tab): WebContentsView {
@@ -274,12 +385,18 @@ function switchAccount(id: string): boolean {
 
 /* ---------- 标签页操作 ---------- */
 
-function newTabForAccount(acc: Account, url?: string): Tab {
+function newTabForAccount(acc: Account, url?: string, activate = true): Tab {
   ensureAccountTabs(acc);
   const t = newTabRecord(url && /^https?:/i.test(url) ? url : HOME_URL);
   acc.tabs.push(t);
-  acc.activeTabId = t.id;
-  switchTab(t.id);
+  if (activate) {
+    acc.activeTabId = t.id;
+    switchTab(t.id);
+  } else {
+    // 后台标签：只记录，视图在首次激活时懒创建
+    scheduleSave();
+    if (activeId === acc.id) sendState();
+  }
   return t;
 }
 
@@ -333,13 +450,13 @@ async function removeAccount(id: string): Promise<boolean> {
   });
   if (choice.response !== 0) return false;
 
-  accounts.splice(idx, 1);
+  // 对话框期间 accounts 可能已变化，重新定位而不是用旧下标
+  const cur = accounts.indexOf(acc);
+  if (cur < 0) return false;
+  accounts.splice(cur, 1);
   for (const t of acc.tabs) destroyTabView(t.id);
 
-  const ses = session.fromPartition(`persist:clouddock-${id}`);
-  await ses.clearStorageData();
-  await ses.clearCache();
-
+  // 先切走并刷新 UI，再清理数据：清理可能耗时，避免界面卡在已删除账号上
   if (activeId === id) {
     activeId = null;
     if (accounts.length > 0) {
@@ -347,11 +464,19 @@ async function removeAccount(id: string): Promise<boolean> {
       const tabId = accounts[0].activeTabId;
       if (tabId) switchTab(tabId);
     } else {
-      win.webContents.focus();
+      win?.webContents.focus();
     }
   }
   scheduleSave();
   sendState();
+
+  try {
+    const ses = session.fromPartition(`persist:clouddock-${id}`);
+    await ses.clearStorageData();
+    await ses.clearCache();
+  } catch (err) {
+    console.error('[clouddock] clear session failed:', err);
+  }
   return true;
 }
 
@@ -365,7 +490,7 @@ function registerIpc(): void {
       id: randomBytes(6).toString('hex'),
       name: String(name ?? '').trim().slice(0, 30) || `账号 ${accounts.length + 1}`,
       note: String(note ?? '').trim().slice(0, 60),
-      color: PALETTE[accounts.length % PALETTE.length],
+      color: pickColor(),
       createdAt: Date.now(),
       tabs: [],
       activeTabId: null,
@@ -420,7 +545,7 @@ function registerIpc(): void {
         wc.stop();
         break;
       case 'home':
-        void wc.loadURL(HOME_URL);
+        safeLoad(wc, HOME_URL);
         break;
       default:
         break;
@@ -436,7 +561,7 @@ function registerIpc(): void {
     try {
       const u = new URL(url);
       if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
-      void wc.loadURL(u.toString());
+      safeLoad(wc, u.toString());
       return true;
     } catch {
       return false;
@@ -499,7 +624,11 @@ function buildMenu(): void {
         { label: '下一个标签页', accelerator: 'CmdOrCtrl+Shift+]', click: () => cycleTab(1) },
       ],
     },
-    { role: 'windowMenu' },
+    // 不用 role:'windowMenu'：它自带「关闭窗口 ⌘W」，会与「关闭标签页 ⌘W」抢快捷键
+    {
+      label: '窗口',
+      submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -533,9 +662,15 @@ function createWindow(): void {
     win = null;
   });
 
+  // UI 页面只允许加载自身：拖入文件/链接不得让主窗口导航走（否则整个界面丢失）
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
   win.webContents.on('did-finish-load', () => {
     if (activeId === null && accounts.length > 0) {
-      switchAccount(accounts[0].id);
+      // 直接恢复上次使用的账号，避免先白白加载第一个账号再切换
+      const target = accounts.find((a) => a.id === savedActiveId) ?? accounts[0];
+      switchAccount(target.id);
     } else {
       sendState();
     }

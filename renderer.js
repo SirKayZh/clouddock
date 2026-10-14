@@ -44,7 +44,6 @@ function activeAccount() {
 }
 
 async function selectAccount(id) {
-  localStorage.setItem('clouddock:lastActive', id);
   await window.api.switch(id);
 }
 
@@ -55,20 +54,34 @@ function render() {
   els.empty.style.display = state.accounts.length === 0 ? 'flex' : 'none';
 }
 
+let tabSig = '';
+
 function renderTabbar() {
   const acc = activeAccount();
   els.tabbar.style.display = acc ? 'flex' : 'none';
-  if (!acc) return;
+  if (!acc) {
+    tabSig = '';
+    return;
+  }
+  // 签名未变则不重建 DOM：页面加载过程中状态推送很频繁，
+  // 重建会让 mousedown→mouseup 之间的点击丢失
+  const sig = JSON.stringify([acc.id, state.activeTabId, acc.tabs.map((t) => [t.id, t.title, t.url])]);
+  if (sig === tabSig) return;
+  tabSig = sig;
   els.tablist.innerHTML = '';
+  let activeEl = null;
   acc.tabs.forEach((tab) => {
     const el = document.createElement('div');
-    el.className = 'tab' + (tab.id === state.activeTabId ? ' active' : '');
+    const isActive = tab.id === state.activeTabId;
+    el.className = 'tab' + (isActive ? ' active' : '');
     const title = tab.title || '新标签页';
     el.innerHTML = `
       <span class="tab-title" title="${escapeHtml(tab.url || '')}">${escapeHtml(title)}</span>
       <span class="tab-close" title="关闭 (⌘W)">✕</span>`;
-    el.addEventListener('click', (e) => {
-      if (!e.target.classList.contains('tab-close')) window.api.switchTab(tab.id);
+    // 与 Chrome 一致：mousedown 即切换；关闭按钮用 click
+    el.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || e.target.classList.contains('tab-close')) return;
+      window.api.switchTab(tab.id);
     });
     el.querySelector('.tab-close').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -78,7 +91,10 @@ function renderTabbar() {
       if (e.button === 1) window.api.closeTab(tab.id);
     });
     els.tablist.appendChild(el);
+    if (isActive) activeEl = el;
   });
+  // tab 很多时保证活跃 tab 可见
+  if (activeEl) activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function renderToolbar() {
@@ -179,8 +195,7 @@ function showAddForm() {
     const note = form.querySelector('#addNote').value.trim();
     if (!name) { nameEl.focus(); return; }
     close();
-    const acc = await window.api.add(name, note);
-    localStorage.setItem('clouddock:lastActive', acc.id);
+    await window.api.add(name, note);
   };
   form.querySelector('#addOk').addEventListener('click', submit);
   form.querySelector('#addCancel').addEventListener('click', close);
@@ -223,12 +238,9 @@ window.addEventListener('keydown', (e) => {
 
 /* ---------- 初始化 ---------- */
 
+// 上次使用的账号由主进程恢复（ui.json），渲染端只负责首屏渲染
 (async function init() {
   const list = await window.api.list();
   if (state.accounts.length === 0) state.accounts = list;
   render();
-  const last = localStorage.getItem('clouddock:lastActive');
-  if (last && list.some((a) => a.id === last)) {
-    await window.api.switch(last);
-  }
 })();
