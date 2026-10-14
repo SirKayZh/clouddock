@@ -98,7 +98,7 @@ function sidebarW(): number {
 const TOPBAR_H = 52;
 const TABBAR_H = 36;
 /** 「保存登录信息」提示条高度（与 index.html #banner 一致） */
-const BANNER_H = 40;
+const BANNER_H = 56;
 const PALETTE = [
   '#0052D9', '#00A870', '#ED7B2F', '#7B61FF',
   '#E3737B', '#029BE5', '#B58A00', '#2E7D32',
@@ -446,6 +446,11 @@ function entriesFor(accountId: string, origin: string): CredEntry[] {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+/** 比较登录用户名时忽略大小写与首尾空白（Alice / alice 视为同一个用户） */
+function normFields(f: string[]): string {
+  return f.map((x) => x.trim().toLowerCase()).join('\u0001');
+}
+
 function isNever(accountId: string, origin: string): boolean {
   return credStore.never.some((n) => n.accountId === accountId && n.origin === origin);
 }
@@ -496,7 +501,7 @@ function onCaptured(wcId: number, frameUrl: string | undefined, raw: unknown): v
   let existingId: string | null = null;
   for (const e of entriesFor(ctx.acc.id, origin)) {
     const saved = decryptEntry(e);
-    if (saved && JSON.stringify(saved.fields) === JSON.stringify(fields)) {
+    if (saved && normFields(saved.fields) === normFields(fields)) {
       if (saved.password === r.password) return;
       existingId = e.id;
       break;
@@ -547,6 +552,7 @@ function armPending(tabId: string): void {
   }
   pending.armed = true;
   pending.ts = Date.now();
+  if (win && !win.isFocused() && process.platform === 'darwin') app.dock?.bounce('informational');
   layoutViews();
   sendState();
 }

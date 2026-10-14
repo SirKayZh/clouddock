@@ -117,10 +117,15 @@ function renderBanner() {
   const acc = state.accounts.find((a) => a.id === p.accountId);
   const name = acc ? acc.name : '该账号';
   els.banner.style.display = 'flex';
+  els.banner.classList.toggle('update', !!p.update);
   els.banner.innerHTML = `
-    <span class="bn-text">🔑 ${p.update ? '更新' : '保存'}密码？<b>${escapeHtml(p.host)}</b> · ${escapeHtml(p.label)}（账号「${escapeHtml(name)}」，加密存于本机）</span>
-    <button class="btn primary" id="bnSave">${p.update ? '更新密码' : '保存'}</button>
-    <button class="btn link" id="bnLater">暂不</button>
+    <span class="bn-icon">🔑</span>
+    <span class="bn-text">
+      <span class="bn-title">${p.update ? '检测到新密码，是否更新已保存的密码？' : '是否保存此登录的密码？'}</span>
+      <span class="bn-sub">${escapeHtml(p.host)} · ${escapeHtml(p.label)} · 账号「${escapeHtml(name)}」· 加密存于本机</span>
+    </span>
+    <button class="btn primary" id="bnSave">${p.update ? '更新密码' : '保存密码'}</button>
+    <button class="btn ghost" id="bnLater">暂不</button>
     <button class="btn link" id="bnNever">从不保存此网站</button>`;
   els.banner.querySelector('#bnSave').addEventListener('click', () => window.api.credSave());
   els.banner.querySelector('#bnLater').addEventListener('click', () => window.api.credDismiss(false));
