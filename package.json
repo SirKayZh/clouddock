@@ -1,7 +1,7 @@
 {
   "name": "clouddock",
   "productName": "CloudDock",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "多账号浏览器 — 同一网站登录多个账号，独立会话秒级切换",
   "author": "Dylan",
   "main": "dist/main.js",

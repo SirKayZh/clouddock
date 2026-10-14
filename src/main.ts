@@ -7,12 +7,12 @@ import {
   shell,
   Menu,
   dialog,
-  safeStorage,
 } from 'electron';
 import type { Rectangle, WebContents, Session, MenuItemConstructorOptions } from 'electron';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import type { Account, AppState, CapturedLogin, FillPayload, PendingSave, Tab } from './types';
 
@@ -114,6 +114,10 @@ let activeId: string | null = null;
 if (process.env.CLOUDDOCK_DATA_DIR) {
   app.setPath('userData', process.env.CLOUDDOCK_DATA_DIR);
 }
+
+// 凭据加密不再使用 Chromium 的钥匙串条目（"CloudDock Safe Storage"，授权绑定 ad-hoc 签名，每次更新都会重新弹框），
+// 声明 mock 钥匙串，确保 Chromium 任何内部路径都不会触发钥匙串授权弹窗。
+app.commandLine.appendSwitch('use-mock-keychain');
 
 /* ---------- 持久化 ---------- */
 
@@ -255,7 +259,7 @@ function pickColor(): string {
  *  - 任意网站登录成功后询问「保存 / 更新密码」，可选「从不保存此网站」
  *  - 已保存的网站再次打开登录页时自动填充（同一网站多个用户名时填最近使用的）
  *  - 凭据按「账号(会话分区) + 网站 origin + 用户名」存储：账号之间互不可见；只会填充到与保存时完全相同 origin 的页面/iframe
- *  - 安全：密码用系统钥匙串加密（safeStorage），磁盘只存密文；加密不可用时功能自动关闭，绝不明文落盘；密码永不下发到界面进程
+ *  - 安全：密码用 AES-256-GCM 加密、密钥存在系统钥匙串（经 /usr/bin/security 读写，不会因应用重新签名而反复弹授权框），磁盘只存密文；加密不可用时功能自动关闭，绝不明文落盘；密码永不下发到界面进程
  *  - 管理入口：菜单「密码」（查看/删除/恢复提示），不占用主界面
  */
 
@@ -265,7 +269,7 @@ interface CredEntry {
   origin: string;
   /** 展示用用户名（非敏感），如「10001 / alice」 */
   label: string;
-  /** base64(safeStorage 密文)：JSON { fields, password } */
+  /** 'v2:' + base64(iv|tag|密文)：JSON { fields, password } */
   enc: string;
   updatedAt: number;
 }
@@ -297,11 +301,80 @@ function credFile(): string {
   return path.join(app.getPath('userData'), 'credentials.json');
 }
 
-function credAvailable(): boolean {
+/*
+ * 密钥管理：随机 32 字节主密钥存入登录钥匙串（服务名 KEY_SERVICE），通过系统自带的 /usr/bin/security 读写。
+ * 不用 Electron safeStorage：它的钥匙串条目按「应用代码签名」授权，本应用是 ad-hoc 签名，
+ * 每次重新打包签名都会变，导致每次都弹「想要使用钥匙串中的机密信息」。
+ * /usr/bin/security 由苹果签名、身份固定，条目由它创建，之后读取不再弹框。
+ */
+const KEY_SERVICE = 'CloudDock Credential Key';
+const KEY_ACCOUNT = 'clouddock';
+const SECURITY_BIN = '/usr/bin/security';
+let masterKeyCache: Buffer | null = null;
+
+function keychainRead(): Buffer | null {
   try {
-    return safeStorage.isEncryptionAvailable();
+    const out = execFileSync(SECURITY_BIN, ['find-generic-password', '-s', KEY_SERVICE, '-a', KEY_ACCOUNT, '-w'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 15_000,
+    }).trim();
+    const buf = Buffer.from(out, 'hex');
+    return buf.length === 32 ? buf : null;
   } catch {
-    return false;
+    return null;
+  }
+}
+
+function masterKey(): Buffer | null {
+  if (masterKeyCache) return masterKeyCache;
+  if (process.platform !== 'darwin') return null;
+  let key = keychainRead();
+  if (!key) {
+    const fresh = randomBytes(32);
+    try {
+      // 仅首次创建时密钥短暂出现在命令行参数中（毫秒级），之后只经 stdout 读取
+      execFileSync(SECURITY_BIN, ['add-generic-password', '-s', KEY_SERVICE, '-a', KEY_ACCOUNT, '-w', fresh.toString('hex'), '-U'], {
+        stdio: 'ignore',
+        timeout: 15_000,
+      });
+    } catch (err) {
+      console.error('[clouddock] keychain write failed:', err);
+      return null;
+    }
+    key = keychainRead();
+    if (!key || !key.equals(fresh)) return null;
+  }
+  masterKeyCache = key;
+  return key;
+}
+
+function credAvailable(): boolean {
+  return masterKey() !== null;
+}
+
+const ENC_PREFIX = 'v2:';
+
+function encryptJson(plain: string): string | null {
+  const key = masterKey();
+  if (!key) return null;
+  const iv = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([c.update(plain, 'utf-8'), c.final()]);
+  return ENC_PREFIX + Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64');
+}
+
+function decryptJson(enc: string): string | null {
+  const key = masterKey();
+  if (!key || !enc.startsWith(ENC_PREFIX)) return null; // 旧版 safeStorage 密文无法读取，视为未保存
+  try {
+    const raw = Buffer.from(enc.slice(ENC_PREFIX.length), 'base64');
+    if (raw.length < 29) return null;
+    const d = createDecipheriv('aes-256-gcm', key, raw.subarray(0, 12));
+    d.setAuthTag(raw.subarray(12, 28));
+    return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString('utf-8');
+  } catch {
+    return null;
   }
 }
 
@@ -356,9 +429,10 @@ function saveCreds(): void {
 }
 
 function decryptEntry(e: CredEntry): FillPayload | null {
-  if (!credAvailable()) return null;
+  const plain = decryptJson(e.enc);
+  if (plain === null) return null;
   try {
-    const obj = JSON.parse(safeStorage.decryptString(Buffer.from(e.enc, 'base64'))) as Partial<FillPayload>;
+    const obj = JSON.parse(plain) as Partial<FillPayload>;
     if (!Array.isArray(obj.fields) || typeof obj.password !== 'string') return null;
     return { fields: obj.fields.map(String), password: obj.password };
   } catch {
@@ -1255,7 +1329,8 @@ function registerIpc(): void {
       return false;
     }
     try {
-      const enc = safeStorage.encryptString(JSON.stringify(p.login)).toString('base64');
+      const enc = encryptJson(JSON.stringify(p.login));
+      if (!enc) return false;
       const now = Date.now();
       const exist = p.existingId ? credStore.entries.find((x) => x.id === p.existingId) : undefined;
       if (exist) {
