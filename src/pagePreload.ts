@@ -2,6 +2,7 @@
  * 注入到每个账号标签页（含 iframe）的脚本：
  *  1. 捕获登录表单提交 -> 上报主进程（是否保存由用户在界面确认）
  *  2. 发现登录框 -> 向主进程请求【该账号 + 当前网站 origin】已保存的登录信息并自动填充
+ *  3. 上报登录页活动信号（仍在输密码 / 密码框已消失），供主进程判断是否还处在同一次登录过程中
  *
  * 运行在隔离世界（contextIsolation + sandbox），页面脚本无法访问这里的 ipcRenderer。
  * 注意：sandbox 预加载脚本只能 require('electron')，所以保持单文件、不引用本地模块。
@@ -60,7 +61,9 @@ function setValue(el: HTMLInputElement, value: string): void {
 
 /* ---------- 捕获 ---------- */
 
+const DUP_WINDOW = 800; // 同一次提交会同时触发 submit/click/keydown，800ms 内视为重复
 let lastSig = '';
+let lastAt = 0;
 
 function tryCapture(): void {
   try {
@@ -72,8 +75,11 @@ function tryCapture(): void {
     while (values.length > 0 && values[0] === '') values.shift();
     if (values.length === 0 || values[values.length - 1] === '') return;
     const sig = `${values.join('\u0000')}\u0001${pwd.value}`;
-    if (sig === lastSig) return;
+    const now = Date.now();
+    // 只做提交瞬间的去重：用完即清，保证「稍后再说」之后再登录一次仍会重新上报
+    if (sig === lastSig && now - lastAt < DUP_WINDOW) return;
     lastSig = sig;
+    lastAt = now;
     ipcRenderer.send('cred:captured', { fields: values, password: pwd.value });
   } catch {
     /* 页面结构异常时静默 */
@@ -89,14 +95,60 @@ document.addEventListener(
     if (!btn) return;
     const text = (btn as HTMLElement).innerText || (btn as HTMLInputElement).value || '';
     const isSubmit = (btn as HTMLButtonElement).type === 'submit' || SUBMIT_TEXT.test(text);
-    if (isSubmit) tryCapture();
+    if (isSubmit) {
+      tryCapture();
+      watchSubmit();
+    }
   },
   true,
 );
 document.addEventListener(
   'keydown',
   (e) => {
-    if (e.key === 'Enter' && (e.target as HTMLElement | null)?.tagName === 'INPUT') tryCapture();
+    if (e.key === 'Enter' && (e.target as HTMLElement | null)?.tagName === 'INPUT') {
+      tryCapture();
+      watchSubmit();
+    }
+  },
+  true,
+);
+
+/* ---------- 与主进程保持「同一次登录过程」 ---------- */
+
+/** 输密码过程中持续心跳：登录流程可能有滑块、二次验证，耗时会超过固定的等待窗口 */
+let lastPing = 0;
+function ping(): void {
+  const now = Date.now();
+  if (now - lastPing < 1000) return;
+  lastPing = now;
+  try {
+    ipcRenderer.send('cred:active');
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 点了登录但没跳转（如密码错误、风控拦截）：密码框消失就告诉主进程别再等这次登录 */
+let formGoneTimer: ReturnType<typeof setTimeout> | null = null;
+function watchSubmit(): void {
+  if (formGoneTimer) clearTimeout(formGoneTimer);
+  formGoneTimer = setTimeout(() => {
+    formGoneTimer = null;
+    if (visiblePasswords().length === 0) {
+      try {
+        ipcRenderer.send('cred:form-gone');
+      } catch {
+        /* 忽略 */
+      }
+    }
+  }, 6000);
+}
+
+document.addEventListener(
+  'input',
+  (e) => {
+    const el = e.target as HTMLElement | null;
+    if (el && el.tagName === 'INPUT') ping();
   },
   true,
 );

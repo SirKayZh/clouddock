@@ -464,8 +464,11 @@ interface RawPending {
 let pending: RawPending | null = null;
 /** 最近一次登录表单提交的用户名：登录页跳转后用于给账号自动命名 */
 let loginHint: { accountId: string; tabId: string; label: string; host: string; ts: number } | null = null;
-/** 登录成功的跳转通常在提交后数秒内发生；超时视为登录失败/用户已离开 */
-const PENDING_TTL = 15_000;
+/**
+ * 等待登录成功的最长时间（有滑块/短信二次验证的站点会久一些）。
+ * 期间页面还在输入（input 心跳）会不断顺延，见 keepPendingAlive。
+ */
+const PENDING_TTL = 120_000;
 
 /** webContents.id -> 所属账号/标签（用于校验 IPC 发送方） */
 const wcMap = new Map<number, { acc: Account; tab: Tab }>();
@@ -500,6 +503,17 @@ function onCaptured(wcId: number, frameUrl: string | undefined, raw: unknown): v
     }
   }
   const hadBanner = !!pending?.armed;
+  // 提示已展示且是同一次登录（同一份凭据）→ 保留原记录，用户没点之前不重置、不重复弹
+  if (
+    hadBanner &&
+    pending &&
+    pending.accountId === ctx.acc.id &&
+    pending.origin === origin &&
+    pending.login.password === r.password &&
+    pending.login.fields.join('\u0001') === fields.join('\u0001')
+  ) {
+    return;
+  }
   pending = {
     accountId: ctx.acc.id,
     login: { fields, password: r.password },
@@ -526,13 +540,29 @@ function armPending(tabId: string): void {
     }
   }
   if (!pending || pending.armed || pending.tabId !== tabId) return;
+  // 距上次输入/提交太久 = 用户已放弃这次登录，之后的普通跳转不能误触发保存提示
   if (Date.now() - pending.ts > PENDING_TTL) {
     pending = null;
     return;
   }
   pending.armed = true;
+  pending.ts = Date.now();
   layoutViews();
   sendState();
+}
+
+/** 页面还在输入（登录页 input 事件）：顺延等待窗口，覆盖滑块/短信二次验证这类耗时流程 */
+function keepPendingAlive(tabId: number): void {
+  if (!pending || pending.armed || pending.tabId !== String(tabId)) return;
+  pending.ts = Date.now();
+}
+
+/**
+ * 点了登录但密码框已经消失、页面却没跳转（密码错误、风控拦截）：
+ * 丢弃这次捕获，用户改对密码再登录时会重新上报，届时照常提示。
+ */
+function abandonPending(tabId: number): void {
+  if (pending && !pending.armed && pending.tabId === String(tabId)) pending = null;
 }
 
 /** 用户主动导航（地址栏/后退/刷新/首页）不应被当作「登录成功跳转」，丢弃尚未确认的捕获 */
@@ -557,6 +587,8 @@ function hostOf(origin: string): string {
 
 function pendingForUi(): PendingSave | null {
   if (!pending?.armed) return null;
+  // 只显示当前账号的提示：否则切账号后点「保存」会误存到别的账号名下
+  if (pending.accountId !== activeId) return null;
   return {
     accountId: pending.accountId,
     label: credLabel(pending.login.fields),
@@ -772,7 +804,7 @@ function applyPermissionPolicy(ses: Session): void {
 function viewBounds(): Rectangle {
   if (!win) return { x: 0, y: 0, width: 0, height: 0 };
   const [cw, ch] = win.getContentSize();
-  const top = TOPBAR_H + TABBAR_H + (pending?.armed ? BANNER_H : 0);
+  const top = TOPBAR_H + TABBAR_H + (pendingForUi() ? BANNER_H : 0);
   return {
     x: sidebarW(),
     y: top,
@@ -1304,6 +1336,17 @@ function registerIpc(): void {
   ipcMain.on('cred:captured', (e, raw: unknown) => {
     if (!credOrigin(e.sender.getURL())) return;
     onCaptured(e.sender.id, e.senderFrame?.url, raw);
+  });
+
+  // 登录过程中的心跳（页面仍在输入）与「表单已消失」
+  ipcMain.on('cred:active', (e) => {
+    if (!credOrigin(e.sender.getURL())) return;
+    keepPendingAlive(e.sender.id);
+  });
+
+  ipcMain.on('cred:form-gone', (e) => {
+    if (!credOrigin(e.sender.getURL())) return;
+    abandonPending(e.sender.id);
   });
 
   // 只回给【origin 与保存时完全一致】的页面/iframe；顶层页面也必须是 http(s)
