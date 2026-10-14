@@ -7,7 +7,7 @@
  * 运行在隔离世界（contextIsolation + sandbox），页面脚本无法访问这里的 ipcRenderer。
  * 注意：sandbox 预加载脚本只能 require('electron')，所以保持单文件、不引用本地模块。
  */
-import { ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer } from 'electron';
 
 const TEXT_SEL =
   'input:not([type]), input[type="text"], input[type="email"], input[type="tel"], input[type="number"], input[type="search"]';
@@ -203,3 +203,13 @@ function start(): void {
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
 else start();
+
+/* ---------- 起始页：地址输入交主进程解析 ---------- */
+/**
+ * start.html 的搜索框不再自带一份 resolve 拷贝（会与地址栏规则漂移），
+ * 统一走主进程 resolveInput。主进程侧只对「停在起始页的已登记 tab」放行，
+ * 普通网站页面即使发现这个 API 也只会得到 false。
+ */
+contextBridge.exposeInMainWorld('clouddockStart', {
+  open: (raw: string): Promise<boolean> => ipcRenderer.invoke('nav:start-input', raw),
+});

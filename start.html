@@ -79,18 +79,11 @@
       grid.appendChild(a);
     });
 
-    function resolve(text) {
-      text = text.trim();
-      if (!text) return null;
-      if (/^https?:\/\//i.test(text)) return text;
-      if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?([\/?#].*)?$/i.test(text)) return 'http://' + text;
-      if (!/\s/.test(text) && /^[^\s\/]+\.[a-z]{2,}(:\d+)?([\/?#].*)?$/i.test(text)) return 'https://' + text;
-      return 'https://www.bing.com/search?q=' + encodeURIComponent(text);
-    }
+    // 输入解析走主进程（与地址栏同一套 resolveInput 规则），本地不再放拷贝
     document.getElementById('f').addEventListener('submit', function (e) {
       e.preventDefault();
-      var url = resolve(document.getElementById('q').value);
-      if (url) location.href = url;
+      var api = window.clouddockStart;
+      if (api) api.open(document.getElementById('q').value);
     });
   </script>
 </body>

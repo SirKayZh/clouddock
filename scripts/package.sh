@@ -20,7 +20,8 @@ SRCDIR="$STAGE/src"
 mkdir -p "$SRCDIR"
 cp package.json package-lock.json tsconfig.json index.html start.html renderer.js README.md "$SRCDIR/"
 cp -R src dist "$SRCDIR/"
-(cd "$SRCDIR" && npm install --no-audit --no-fund)
+# npm ci：严格按 package-lock 安装，版本已锁定，构建可复现
+(cd "$SRCDIR" && npm ci --no-audit --no-fund)
 # electron 二进制 postinstall 可能静默失败，兜底手动补装
 if [ ! -f "$SRCDIR/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" ]; then
   echo "==> electron 二进制缺失，手动补装"
