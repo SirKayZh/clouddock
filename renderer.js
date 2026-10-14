@@ -201,51 +201,15 @@ function startRename(item, acc) {
   input.addEventListener('blur', () => done(true));
 }
 
-function showAddForm() {
-  editing = true;
-  els.addBtn.style.display = 'none';
-  const form = document.createElement('div');
-  form.className = 'add-form';
-  form.innerHTML = `
-    <input id="addName" class="add-input" placeholder="账号名称，如：生产环境" maxlength="30">
-    <input id="addNote" class="add-input" placeholder="备注（可选），如：UIN 1000xxxx" maxlength="60">
-    <div class="add-actions">
-      <button class="btn primary" id="addOk">添加并登录</button>
-      <button class="btn" id="addCancel">取消</button>
-    </div>`;
-  els.footer.insertBefore(form, els.footer.firstChild);
-  const nameEl = form.querySelector('#addName');
-  nameEl.focus();
-  let closed = false;
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    editing = false;
-    form.remove();
-    els.addBtn.style.display = '';
-  };
-  const submit = async () => {
-    const name = nameEl.value.trim();
-    const note = form.querySelector('#addNote').value.trim();
-    if (!name) { nameEl.focus(); return; }
-    close();
-    await window.api.add(name, note);
-  };
-  form.querySelector('#addOk').addEventListener('click', submit);
-  form.querySelector('#addCancel').addEventListener('click', close);
-  form.querySelectorAll('input').forEach((inp) => {
-    inp.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') submit();
-      if (e.key === 'Escape') close();
-    });
-  });
+/** 添加账号：不再手动输入，直接新建独立会话并打开腾讯云网页登录页，登录后自动用 UIN 命名 */
+async function addAccount() {
+  await window.api.add();
 }
 
 /* ---------- 事件绑定 ---------- */
 
-els.addBtn.addEventListener('click', showAddForm);
-document.getElementById('btnAddEmpty').addEventListener('click', showAddForm);
+els.addBtn.addEventListener('click', addAccount);
+document.getElementById('btnAddEmpty').addEventListener('click', addAccount);
 els.tabNew.addEventListener('click', () => window.api.newTab());
 els.back.addEventListener('click', () => window.api.nav('back'));
 els.fwd.addEventListener('click', () => window.api.nav('forward'));

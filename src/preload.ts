@@ -3,7 +3,7 @@ import type { Account, AppState } from './types';
 
 contextBridge.exposeInMainWorld('api', {
   list: (): Promise<Account[]> => ipcRenderer.invoke('accounts:list'),
-  add: (name: string, note: string): Promise<Account> =>
+  add: (name?: string, note?: string): Promise<Account> =>
     ipcRenderer.invoke('accounts:add', name, note),
   remove: (id: string): Promise<boolean> => ipcRenderer.invoke('accounts:remove', id),
   rename: (id: string, name: string): Promise<boolean> =>

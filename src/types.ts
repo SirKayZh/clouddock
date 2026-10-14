@@ -10,6 +10,12 @@ export interface Account {
   note: string;
   color: string;
   createdAt: number;
+  /** true = 名称由登录后的腾讯云 UIN 自动识别（用户手动重命名后置 false，不再覆盖） */
+  autoName?: boolean;
+  /** 当前登录的操作者 UIN（子账号登录时与 ownerUin 不同） */
+  uin?: string;
+  /** 主账号 UIN */
+  ownerUin?: string;
   tabs: Tab[];
   activeTabId: string | null;
 }

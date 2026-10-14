@@ -16,6 +16,10 @@ import { randomBytes } from 'node:crypto';
 import type { Account, AppState, CapturedLogin, FillPayload, PendingSave, Tab } from './types';
 
 const HOME_URL = 'https://console.cloud.tencent.com/';
+/** 新账号首个标签直达腾讯云网页登录页（登录后跳回控制台） */
+const LOGIN_URL = 'https://cloud.tencent.com/login?s_url=https%3A%2F%2Fconsole.cloud.tencent.com%2F';
+/** 新账号在识别到 UIN 之前的占位备注 */
+const PENDING_NOTE = '登录后自动识别账号';
 const SIDEBAR_W = 232;
 const TOPBAR_H = 52;
 const TABBAR_H = 36;
@@ -106,6 +110,9 @@ function sanitizeAccount(raw: unknown): Account | null {
     note: typeof a.note === 'string' ? a.note.slice(0, 60) : '',
     color: typeof a.color === 'string' && /^#[0-9a-f]{6}$/i.test(a.color) ? a.color : PALETTE[0],
     createdAt: typeof a.createdAt === 'number' ? a.createdAt : Date.now(),
+    autoName: a.autoName === true,
+    uin: typeof a.uin === 'string' && /^\d{4,20}$/.test(a.uin) ? a.uin : undefined,
+    ownerUin: typeof a.ownerUin === 'string' && /^\d{4,20}$/.test(a.ownerUin) ? a.ownerUin : undefined,
     tabs,
     activeTabId: typeof a.activeTabId === 'string' ? a.activeTabId : null,
   };
@@ -451,6 +458,72 @@ function findAccountByTab(tabId: string): { acc: Account; tab: Tab } | null {
   return null;
 }
 
+/* ---------- 登录后自动识别账号（读腾讯云登录 Cookie 中的 UIN） ---------- */
+/*
+ * 腾讯云通过网页登录（扫码/邮箱/子账号等），用户无需在本应用里输入任何账号信息。
+ * 登录成功后，腾讯云会在 .cloud.tencent.com 等域写入 uin（当前操作者）与 ownerUin（主账号）Cookie，
+ * 这里读取其数字部分，自动作为侧边栏账号名；用户手动重命名后不再覆盖。
+ */
+
+const UIN_COOKIE_DOMAINS = ['tencent.com', 'tencentcloud.com', 'qcloud.com'];
+/** 仅测试：设置了 CLOUDDOCK_DATA_DIR 时才允许本地域名，便于自动化测试 */
+const UIN_TEST_DOMAINS: string[] = process.env.CLOUDDOCK_DATA_DIR ? ['127.0.0.1', 'localhost'] : [];
+
+function uinDomainOk(domain: string): boolean {
+  const d = domain.replace(/^\./, '').toLowerCase();
+  if (UIN_TEST_DOMAINS.includes(d)) return true;
+  return UIN_COOKIE_DOMAINS.some((s) => d === s || d.endsWith(`.${s}`));
+}
+
+async function readUinCookie(ses: Session, name: string): Promise<string> {
+  const list = await ses.cookies.get({ name });
+  for (const c of list) {
+    if (!uinDomainOk(c.domain ?? '')) continue;
+    const digits = c.value.replace(/\D/g, '');
+    if (/^\d{4,20}$/.test(digits)) return digits;
+  }
+  return '';
+}
+
+async function detectAccountIdentity(accountId: string): Promise<void> {
+  const acc = accounts.find((a) => a.id === accountId);
+  if (!acc) return;
+  try {
+    const ses = session.fromPartition(`persist:clouddock-${acc.id}`);
+    const uin = await readUinCookie(ses, 'uin');
+    if (!uin) return; // 未登录/已退出：保持现状
+    const owner = (await readUinCookie(ses, 'ownerUin')) || uin;
+    if (!accounts.includes(acc) || (acc.uin === uin && acc.ownerUin === owner)) return;
+    acc.uin = uin;
+    acc.ownerUin = owner;
+    if (acc.autoName) {
+      acc.name = uin;
+      acc.note = uin === owner ? '' : `子账号 · 主账号 ${owner}`;
+    }
+    scheduleSave();
+    sendState();
+  } catch (err) {
+    console.error('[clouddock] detect identity failed:', err);
+  }
+}
+
+const watchedSessions = new Set<string>();
+const identityTimers = new Map<string, NodeJS.Timeout>();
+
+/** 监听该账号会话的 uin 类 Cookie 变化（登录/切换子账号时触发），防抖后重新识别 */
+function watchAccountIdentity(acc: Account, ses: Session): void {
+  if (watchedSessions.has(acc.id)) return;
+  watchedSessions.add(acc.id);
+  ses.cookies.on('changed', (_e, cookie, _cause, removed) => {
+    if (removed || (cookie.name !== 'uin' && cookie.name !== 'ownerUin')) return;
+    clearTimeout(identityTimers.get(acc.id));
+    identityTimers.set(
+      acc.id,
+      setTimeout(() => void detectAccountIdentity(acc.id), 800),
+    );
+  });
+}
+
 /* ---------- 权限策略（session 级） ---------- */
 
 function applyPermissionPolicy(ses: Session): void {
@@ -519,6 +592,7 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
   const ua = ses.getUserAgent().replace(/Electron\/[\d.]+\s*/i, '');
   ses.setUserAgent(ua);
   applyPermissionPolicy(ses);
+  watchAccountIdentity(acc, ses);
 
   const view = new WebContentsView({
     webPreferences: {
@@ -580,6 +654,8 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
   });
   wc.on('did-finish-load', () => {
     crashCount = 0;
+    // 兜底：页面加载完成后再识别一次（覆盖升级前已登录、Cookie 事件早于监听等情况）
+    void detectAccountIdentity(acc.id);
   });
   wc.on('did-navigate', () => {
     tab.url = wc.getURL();
@@ -767,17 +843,22 @@ function registerIpc(): void {
   ipcMain.handle('accounts:list', () => accounts);
 
   ipcMain.handle('accounts:add', (_e, name: unknown, note: unknown): Account => {
+    // 不再手动输入：不传名称时直接开登录页，登录后按 UIN 自动命名
+    const manualName = String(name ?? '').trim().slice(0, 30);
+    const loginTab = newTabRecord(LOGIN_URL);
+    let seq = 1;
+    while (accounts.some((a) => a.name === `新账号 ${seq}`)) seq += 1;
     const acc: Account = {
       id: randomBytes(6).toString('hex'),
-      name: String(name ?? '').trim().slice(0, 30) || `账号 ${accounts.length + 1}`,
-      note: String(note ?? '').trim().slice(0, 60),
+      name: manualName || `新账号 ${seq}`,
+      note: manualName ? String(note ?? '').trim().slice(0, 60) : PENDING_NOTE,
       color: pickColor(),
       createdAt: Date.now(),
-      tabs: [],
-      activeTabId: null,
+      autoName: !manualName,
+      tabs: [loginTab],
+      activeTabId: loginTab.id,
     };
     accounts.push(acc);
-    ensureAccountTabs(acc);
     scheduleSave();
     switchAccount(acc.id);
     return acc;
@@ -791,6 +872,8 @@ function registerIpc(): void {
     const n = String(name ?? '').trim().slice(0, 30);
     if (!n) return false;
     acc.name = n;
+    acc.autoName = false; // 手动命名后不再被自动识别覆盖
+    if (acc.note === PENDING_NOTE) acc.note = '';
     scheduleSave();
     sendState();
     return true;

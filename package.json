@@ -1,7 +1,7 @@
 {
   "name": "clouddock",
   "productName": "CloudDock",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "腾讯云多账号工作台 — 多账号独立会话快速切换",
   "author": "Dylan",
   "main": "dist/main.js",
