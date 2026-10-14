@@ -8,6 +8,7 @@ import {
   Menu,
   dialog,
   crashReporter,
+  clipboard,
 } from 'electron';
 import type { Rectangle, WebContents, Session, MenuItemConstructorOptions } from 'electron';
 import * as path from 'node:path';
@@ -743,6 +744,72 @@ function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView
     return { action: 'deny' };
   });
 
+  // 网页右键菜单：Electron 不内置 Chromium 的右键菜单（context-menu 事件只触发不展示），
+  // 需应用自行构建并 popup；坐标是页面内坐标，popup 需要相对窗口的坐标（加上视图偏移）。
+  wc.on('context-menu', (_e, params) => {
+    if (!win || win.isDestroyed()) return;
+    const items: MenuItemConstructorOptions[] = [];
+
+    if (params.linkURL && isHttpUrl(params.linkURL)) {
+      items.push(
+        {
+          label: '在新标签页打开链接',
+          click: () => {
+            if (wc.isDestroyed() || !accounts.includes(acc)) return;
+            newTabForAccount(acc, params.linkURL, activeId === acc.id);
+          },
+        },
+        { label: '在系统浏览器中打开链接', click: () => void shell.openExternal(params.linkURL) },
+        { label: '复制链接地址', click: () => clipboard.writeText(params.linkURL) },
+        { type: 'separator' },
+      );
+    }
+    if (params.mediaType === 'image' && params.srcURL) {
+      items.push(
+        { label: '复制图片地址', click: () => clipboard.writeText(params.srcURL) },
+        { type: 'separator' },
+      );
+    }
+    if (params.isEditable) {
+      items.push(
+        { label: '撤销', click: () => !wc.isDestroyed() && wc.undo() },
+        { label: '重做', click: () => !wc.isDestroyed() && wc.redo() },
+        { type: 'separator' },
+        { label: '剪切', enabled: params.editFlags.canCut, click: () => !wc.isDestroyed() && wc.cut() },
+        { label: '复制', enabled: params.editFlags.canCopy, click: () => !wc.isDestroyed() && wc.copy() },
+        { label: '粘贴', enabled: params.editFlags.canPaste, click: () => !wc.isDestroyed() && wc.paste() },
+        { label: '全选', click: () => !wc.isDestroyed() && wc.selectAll() },
+        { type: 'separator' },
+      );
+    } else if (params.selectionText) {
+      items.push(
+        { label: '复制', click: () => !wc.isDestroyed() && wc.copy() },
+        { type: 'separator' },
+      );
+    }
+
+    items.push(
+      { label: '后退', enabled: wc.canGoBack(), click: () => !wc.isDestroyed() && wc.goBack() },
+      { label: '前进', enabled: wc.canGoForward(), click: () => !wc.isDestroyed() && wc.goForward() },
+      { label: '重新加载', click: () => !wc.isDestroyed() && wc.reload() },
+    );
+
+    const pageUrl = wc.getURL();
+    if (isHttpUrl(pageUrl)) {
+      items.push(
+        { type: 'separator' },
+        { label: '在系统浏览器中打开当前页', click: () => void shell.openExternal(pageUrl) },
+      );
+    }
+    items.push(
+      { type: 'separator' },
+      { label: '检查元素', click: () => !wc.isDestroyed() && wc.openDevTools({ mode: 'detach' }) },
+    );
+
+    const b = view.getBounds();
+    Menu.buildFromTemplate(items).popup({ window: win, x: b.x + params.x, y: b.y + params.y });
+  });
+
   // ⌘1~⌘9 切换账号（仅拦截数字键，其余交给应用菜单）
   wc.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || !input.meta) return;
@@ -862,6 +929,37 @@ function showOnly(tabId: string): void {
 
 /* ---------- 切换 ---------- */
 
+/**
+ * Spare 视图池（Chrome SpareRenderProcessHost 的应用层等价）：
+ * 为活跃账号维持一个隐藏的预热 WebContentsView（同 partition、about:blank 已就绪）。
+ * 新建标签页时直接转正它，省掉现场拉起渲染进程的 150-400ms（新建 tab 冷启动的大头）。
+ * - spare 的 Tab 不进 acc.tabs：不参与标签栏与持久化，纯进程级预热；
+ * - 转正 = 把 spare Tab push 进 acc.tabs，switchTab 的 prewarmedTabs 转正路径自然接管导航；
+ * - 消费后延迟补位（schedulePrewarm），账号切换后为新活跃账号补建；
+ * - 总上限 SPARE_MAX，防多账号场景渲染进程数膨胀。
+ */
+const SPARE_MAX = 3;
+/** accountId -> spare Tab（其视图挂在 views，key = tab.id） */
+const spareByAccount = new Map<string, Tab>();
+
+function makeSpareView(acc: Account): void {
+  if (!win || win.isDestroyed()) return;
+  if (spareByAccount.has(acc.id)) return;
+  if (spareByAccount.size >= SPARE_MAX) return;
+  if (!accounts.includes(acc)) return;
+  const t = newTabRecord('');
+  spareByAccount.set(acc.id, t);
+  createTabView(acc, t, true);
+}
+
+/** 销毁某账号的 spare（账号删除等场景，防止孤儿渲染进程） */
+function destroySpare(accountId: string): void {
+  const spare = spareByAccount.get(accountId);
+  if (!spare) return;
+  spareByAccount.delete(accountId);
+  destroyTabView(spare.id);
+}
+
 function switchTab(tabId: string): boolean {
   const found = findAccountByTab(tabId);
   if (!found || !win) return false;
@@ -887,6 +985,8 @@ function switchAccount(id: string): boolean {
   ensureAccountTabs(acc);
   const tabId = acc.activeTabId;
   if (!tabId) return false;
+  // 切换后为新活跃账号补 spare（延迟执行，不与切换导航抢资源）
+  schedulePrewarm(5_000);
   return switchTab(tabId);
 }
 
@@ -894,8 +994,28 @@ function switchAccount(id: string): boolean {
 
 function newTabForAccount(acc: Account, url?: string, activate = true): Tab {
   ensureAccountTabs(acc);
-  const t = newTabRecord(url && /^https?:/i.test(url) ? url : '');
-  acc.tabs.push(t);
+  const httpUrl = url && /^https?:/i.test(url) ? url : '';
+  let t: Tab;
+  if (activate) {
+    // 优先转正 spare：渲染进程已就绪，switchTab 只剩导航时间
+    const spare = spareByAccount.get(acc.id) ?? null;
+    spareByAccount.delete(acc.id);
+    if (spare && prewarmedTabs.has(spare.id) && views.has(spare.id)) {
+      t = spare;
+      t.url = httpUrl;
+      acc.tabs.push(t);
+      // 消费后尽快补位（延迟执行，不与本次导航抢资源）
+      schedulePrewarm(3_000);
+    } else {
+      if (spare) destroyTabView(spare.id); // 视图已失效（如被崩溃清理），不挂孤儿
+      t = newTabRecord(httpUrl);
+      acc.tabs.push(t);
+    }
+  } else {
+    // 后台标签：只记录，视图在首次激活时懒创建（保持原语义，不用 spare）
+    t = newTabRecord(httpUrl);
+    acc.tabs.push(t);
+  }
   if (activate) {
     acc.activeTabId = t.id;
     switchTab(t.id);
@@ -1127,6 +1247,7 @@ async function removeAccount(id: string): Promise<boolean> {
   if (cur < 0) return false;
   accounts.splice(cur, 1);
   for (const t of acc.tabs) destroyTabView(t.id);
+  destroySpare(id); // spare 的 Tab 不在 acc.tabs 里，需单独清理
   dropAccountCreds(id);
   // 清掉身份监听残留（cookie 监听器挂在已销毁 session 上，timer 不清会空跑）
   watchedSessions.delete(id);
@@ -1182,6 +1303,9 @@ function prewarmViews(): void {
     createTabView(acc, tab, true);
     made += 1;
   }
+  // 活跃账号的 spare：新建标签页（⌘T / 链接新开）零冷启动
+  const active = activeAccount();
+  if (active) makeSpareView(active);
   for (const acc of accounts) {
     if (!acc.home || !isHttpUrl(acc.home)) continue;
     try {
