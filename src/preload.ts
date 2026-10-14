@@ -17,6 +17,12 @@ contextBridge.exposeInMainWorld('api', {
   openUrl: (url: string): Promise<boolean> => ipcRenderer.invoke('nav:url', url),
   credSave: (): Promise<boolean> => ipcRenderer.invoke('cred:save'),
   credDismiss: (never: boolean): Promise<boolean> => ipcRenderer.invoke('cred:dismiss', never),
+  toggleSidebar: (collapsed?: boolean): Promise<boolean> => ipcRenderer.invoke('ui:sidebar', collapsed),
+  focusUi: (): Promise<void> => ipcRenderer.invoke('ui:focus'),
+  accountMenu: (id: string): Promise<void> => ipcRenderer.invoke('accounts:menu', id),
+  onRenameStart: (cb: (id: string) => void): void => {
+    ipcRenderer.on('rename:start', (_event, id: unknown) => cb(String(id)));
+  },
   onState: (cb: (state: AppState) => void): void => {
     ipcRenderer.on('state:update', (_event, state: AppState) => cb(state));
   },

@@ -89,6 +89,12 @@ function resolveInput(raw: string): string | null {
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 const SIDEBAR_W = 232;
+/** 收起后的窄栏宽度（只显示头像，须容纳 macOS 红绿灯；与 index.html body.collapsed 一致） */
+const RAIL_W = 72;
+let sidebarCollapsed = false;
+function sidebarW(): number {
+  return sidebarCollapsed ? RAIL_W : SIDEBAR_W;
+}
 const TOPBAR_H = 52;
 const TABBAR_H = 36;
 /** 「保存登录信息」提示条高度（与 index.html #banner 一致） */
@@ -126,12 +132,23 @@ function writeFileAtomic(file: string, content: string, mode?: number): void {
   fs.renameSync(tmp, file);
 }
 
+function saveUiNow(): void {
+  try {
+    const file = uiFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // activeId 为空时沿用已读到的上次值，避免只切侧边栏就丢了「上次账号」
+    writeFileAtomic(file, JSON.stringify({ activeId: activeId ?? savedActiveId, sidebarCollapsed }));
+  } catch (err) {
+    console.error('[clouddock] save ui failed:', err);
+  }
+}
+
 function saveAccountsNow(): void {
   try {
     const file = accountsFile();
     fs.mkdirSync(path.dirname(file), { recursive: true });
     writeFileAtomic(file, JSON.stringify(accounts, null, 2));
-    if (activeId) writeFileAtomic(uiFile(), JSON.stringify({ activeId }));
+    saveUiNow();
   } catch (err) {
     console.error('[clouddock] save failed:', err);
   }
@@ -220,6 +237,7 @@ function loadAccounts(): void {
     const ui: unknown = JSON.parse(fs.readFileSync(uiFile(), 'utf-8'));
     const id = (ui as { activeId?: unknown }).activeId;
     savedActiveId = typeof id === 'string' ? id : null;
+    sidebarCollapsed = (ui as { sidebarCollapsed?: unknown }).sidebarCollapsed === true;
   } catch {
     savedActiveId = null;
   }
@@ -682,9 +700,9 @@ function viewBounds(): Rectangle {
   const [cw, ch] = win.getContentSize();
   const top = TOPBAR_H + TABBAR_H + (pending?.armed ? BANNER_H : 0);
   return {
-    x: SIDEBAR_W,
+    x: sidebarW(),
     y: top,
-    width: Math.max(0, cw - SIDEBAR_W),
+    width: Math.max(0, cw - sidebarW()),
     height: Math.max(0, ch - top),
   };
 }
@@ -714,6 +732,7 @@ function sendState(): void {
     canGoForward: wc ? wc.navigationHistory.canGoForward() : false,
     isLoading: wc ? wc.isLoading() : false,
     pending: pendingForUi(),
+    sidebarCollapsed,
   };
   refreshMenuIfNeeded();
   win.webContents.send('state:update', state);
@@ -932,6 +951,165 @@ function cycleTab(delta: number): void {
   if (next) switchTab(next.id);
 }
 
+/* ---------- 侧边栏收起 / 展开 ---------- */
+
+function setSidebarCollapsed(next: boolean): void {
+  if (sidebarCollapsed === next) return;
+  sidebarCollapsed = next;
+  saveUiNow();
+  layoutViews();
+  sendState();
+}
+
+/* ---------- 清除 Cookie ---------- */
+/*
+ * 三档范围（均只作用于所选账号自己的独立会话，不影响其它账号；已保存的密码不会被清除）：
+ *   cookies  该账号全部 Cookie（所有网站退出登录）
+ *   site     只清当前标签页网站可见的 Cookie
+ *   all      全部站点数据：Cookie + 缓存 + 本地存储等
+ */
+type ClearScope = 'cookies' | 'site' | 'all';
+
+function accountSession(acc: Account): Session {
+  return session.fromPartition(`persist:clouddock-${acc.id}`);
+}
+
+/** 账号当前标签页所在网站的主机名（起始页/非网页返回空串） */
+function currentHost(acc: Account): string {
+  const tab = acc.tabs.find((t) => t.id === acc.activeTabId);
+  if (!tab) return '';
+  const wcUrl = views.get(tab.id)?.webContents.getURL();
+  const url = isHttpUrl(wcUrl) ? wcUrl : tab.url;
+  try {
+    return isHttpUrl(url) ? new URL(url).hostname.toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+function cookieDomain(c: Electron.Cookie): string {
+  return (c.domain ?? '').replace(/^\./, '').toLowerCase();
+}
+
+async function cookiesFor(ses: Session, host: string | null): Promise<Electron.Cookie[]> {
+  const all = await ses.cookies.get({});
+  if (host === null) return all;
+  // 与浏览器发送规则一致：Cookie 域是主机本身或其上级域
+  return all.filter((c) => {
+    const d = cookieDomain(c);
+    return !!d && (host === d || host.endsWith(`.${d}`));
+  });
+}
+
+async function clearAccountData(acc: Account, scope: ClearScope): Promise<boolean> {
+  if (!win || !accounts.includes(acc)) return false;
+  const ses = accountSession(acc);
+  const host = scope === 'site' ? currentHost(acc) : null;
+  if (scope === 'site' && !host) {
+    await dialog.showMessageBox(win, {
+      type: 'info',
+      buttons: ['好'],
+      message: '当前标签页不是网站页面',
+      detail: '请先切到要清除 Cookie 的网站标签页，再执行此操作。',
+    });
+    return false;
+  }
+  const count = (await cookiesFor(ses, host)).length;
+  const message =
+    scope === 'site'
+      ? `清除账号「${acc.name}」在 ${host} 的 Cookie？`
+      : scope === 'cookies'
+        ? `清除账号「${acc.name}」的全部 Cookie？`
+        : `清除账号「${acc.name}」的全部站点数据？`;
+  const detail =
+    scope === 'all'
+      ? `将清除该账号所有网站的 Cookie（共 ${count} 条）、缓存、本地存储，所有网站需重新登录。账号本身和已保存的密码保留。`
+      : `共 ${count} 条 Cookie。清除后${scope === 'site' ? '该网站' : '所有网站'}会退出登录，需重新登录。账号本身和已保存的密码保留。`;
+  const choice = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['清除', '取消'],
+    defaultId: 1,
+    cancelId: 1,
+    message,
+    detail,
+  });
+  if (choice.response !== 0 || !accounts.includes(acc)) return false;
+
+  try {
+    if (scope === 'site') {
+      for (const c of await cookiesFor(ses, host)) {
+        const d = cookieDomain(c);
+        await ses.cookies.remove(`${c.secure ? 'https' : 'http'}://${d}${c.path ?? '/'}`, c.name);
+      }
+    } else if (scope === 'cookies') {
+      await ses.clearStorageData({ storages: ['cookies'] });
+    } else {
+      await ses.clearStorageData();
+      await ses.clearCache();
+    }
+    await ses.cookies.flushStore();
+  } catch (err) {
+    console.error('[clouddock] clear cookies failed:', err);
+    return false;
+  }
+
+  if (scope !== 'site') {
+    delete acc.uin;
+    delete acc.ownerUin;
+  }
+  for (const t of acc.tabs) views.get(t.id)?.webContents.reload();
+  scheduleSave();
+  sendState();
+  return true;
+}
+
+/** 清除所有账号的 Cookie（一次确认） */
+async function clearAllAccountsCookies(): Promise<boolean> {
+  if (!win || accounts.length === 0) return false;
+  let total = 0;
+  for (const a of accounts) total += (await cookiesFor(accountSession(a), null)).length;
+  const choice = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['清除', '取消'],
+    defaultId: 1,
+    cancelId: 1,
+    message: `清除全部 ${accounts.length} 个账号的 Cookie？`,
+    detail: `共 ${total} 条 Cookie。所有账号的所有网站都会退出登录。账号本身和已保存的密码保留。`,
+  });
+  if (choice.response !== 0) return false;
+  for (const a of [...accounts]) {
+    if (!accounts.includes(a)) continue;
+    try {
+      const ses = accountSession(a);
+      await ses.clearStorageData({ storages: ['cookies'] });
+      await ses.cookies.flushStore();
+    } catch (err) {
+      console.error('[clouddock] clear cookies failed:', err);
+    }
+    delete a.uin;
+    delete a.ownerUin;
+    for (const t of a.tabs) views.get(t.id)?.webContents.reload();
+  }
+  scheduleSave();
+  sendState();
+  return true;
+}
+
+/** 清除 Cookie 的三个菜单项（右键菜单与「账号」菜单共用） */
+function cookieMenuItems(acc: Account): MenuItemConstructorOptions[] {
+  return [
+    { label: '清除 Cookie（退出该账号所有网站登录）…', click: () => void clearAccountData(acc, 'cookies') },
+    { label: '清除当前网站的 Cookie…', click: () => void clearAccountData(acc, 'site') },
+    { label: '清除全部站点数据（Cookie、缓存、本地存储）…', click: () => void clearAccountData(acc, 'all') },
+  ];
+}
+
+function requestRename(id: string): void {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.focus();
+  win.webContents.send('rename:start', id);
+}
+
 /* ---------- 删除账号 ---------- */
 
 async function removeAccount(id: string): Promise<boolean> {
@@ -1022,6 +1200,30 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('accounts:switch', (_e, id: unknown): boolean => switchAccount(String(id)));
+
+  // 侧边栏：收起 / 展开（不传参数 = 切换）
+  ipcMain.handle('ui:sidebar', (_e, collapsed: unknown): boolean => {
+    setSidebarCollapsed(typeof collapsed === 'boolean' ? collapsed : !sidebarCollapsed);
+    return sidebarCollapsed;
+  });
+
+  // 侧边栏行内编辑前把键盘焦点拿回 UI 页面（否则按键/输入法会落到网页视图里）
+  ipcMain.handle('ui:focus', (): void => {
+    win?.webContents.focus();
+  });
+
+  // 账号右键菜单 / 「⋯」按钮
+  ipcMain.handle('accounts:menu', (_e, id: unknown): void => {
+    const acc = accounts.find((a) => a.id === String(id));
+    if (!acc || !win) return;
+    Menu.buildFromTemplate([
+      { label: '重命名', click: () => requestRename(acc.id) },
+      { type: 'separator' },
+      ...cookieMenuItems(acc),
+      { type: 'separator' },
+      { label: '删除账号…', click: () => void removeAccount(acc.id) },
+    ]).popup({ window: win });
+  });
 
   /* ----- 密码管理 ----- */
   // 页面注入脚本 -> 主进程：发送方必须是账号标签页里的 http(s) 页面
@@ -1190,11 +1392,28 @@ function passwordMenu(): MenuItemConstructorOptions {
   return { label: '密码', submenu: items };
 }
 
+/** 「账号」菜单：重命名、清除 Cookie（作用于当前账号） */
+function accountMenu(): MenuItemConstructorOptions {
+  const acc = activeAccount();
+  const items: MenuItemConstructorOptions[] = acc
+    ? [
+        { label: `当前账号：${acc.name}`, enabled: false },
+        { label: '重命名', click: () => requestRename(acc.id) },
+        { type: 'separator' },
+        ...cookieMenuItems(acc),
+      ]
+    : [{ label: '请先选择账号', enabled: false }];
+  items.push({ type: 'separator' }, { label: '清除所有账号的 Cookie…', enabled: accounts.length > 0, click: () => void clearAllAccountsCookies() });
+  return { label: '账号', submenu: items };
+}
+
 let menuSig = '';
 /** 当前账号 / 已存密码变化时才重建菜单（sendState 很频繁） */
 function refreshMenuIfNeeded(): void {
   const sig = JSON.stringify([
     activeId,
+    activeAccount()?.name,
+    accounts.length,
     credStore.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
     credStore.never.filter((n) => n.accountId === activeId).length,
   ]);
@@ -1205,6 +1424,8 @@ function refreshMenuIfNeeded(): void {
 function buildMenu(): void {
   menuSig = JSON.stringify([
     activeId,
+    activeAccount()?.name,
+    accounts.length,
     credStore.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
     credStore.never.filter((n) => n.accountId === activeId).length,
   ]);
@@ -1220,6 +1441,8 @@ function buildMenu(): void {
     {
       label: '视图',
       submenu: [
+        { label: '收起 / 展开侧边栏', accelerator: 'CmdOrCtrl+B', click: () => setSidebarCollapsed(!sidebarCollapsed) },
+        { type: 'separator' },
         { label: '刷新当前标签页', accelerator: 'CmdOrCtrl+R', click: () => activeWc()?.reload() },
         { label: '后退', accelerator: 'CmdOrCtrl+[', click: () => activeWc()?.goBack() },
         { label: '前进', accelerator: 'CmdOrCtrl+]', click: () => activeWc()?.goForward() },
@@ -1260,6 +1483,7 @@ function buildMenu(): void {
         { label: '下一个标签页', accelerator: 'CmdOrCtrl+Shift+]', click: () => cycleTab(1) },
       ],
     },
+    accountMenu(),
     passwordMenu(),
     // 不用 role:'windowMenu'：它自带「关闭窗口 ⌘W」，会与「关闭标签页 ⌘W」抢快捷键
     {

@@ -45,6 +45,8 @@ export interface AppState {
   canGoForward: boolean;
   isLoading: boolean;
   pending: PendingSave | null;
+  /** 侧边栏是否收起为窄栏 */
+  sidebarCollapsed: boolean;
 }
 
 /** 页面注入脚本向主进程上报的登录表单内容 */

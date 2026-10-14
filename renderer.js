@@ -27,6 +27,7 @@ let state = {
   canGoForward: false,
   isLoading: false,
   pending: null,
+  sidebarCollapsed: false,
 };
 let editing = false; // 添加/重命名进行中时跳过列表重渲染
 
@@ -53,6 +54,7 @@ function render() {
   renderToolbar();
   renderTabbar();
   renderBanner();
+  document.body.classList.toggle('collapsed', !!state.sidebarCollapsed);
   if (!editing) renderList();
   els.empty.style.display = state.accounts.length === 0 ? 'flex' : 'none';
 }
@@ -154,16 +156,26 @@ function renderList() {
     item.className = 'acc-item' + (acc.id === state.activeId ? ' active' : '');
     const hint = i < 9 ? `<span class="acc-hint">⌘${i + 1}</span>` : '';
     item.innerHTML = `
-      <span class="acc-avatar" style="background:${acc.color}">${escapeHtml(acc.name.slice(0, 1).toUpperCase())}</span>
+      <span class="acc-avatar" title="${escapeHtml(acc.name)}" style="background:${acc.color}">${escapeHtml(acc.name.slice(0, 1).toUpperCase())}</span>
       <span class="acc-info">
         <span class="acc-name" title="双击重命名">${escapeHtml(acc.name)}</span>
         ${acc.note ? `<span class="acc-note">${escapeHtml(acc.note)}</span>` : ''}
       </span>
       ${hint}
+      <span class="acc-more" title="更多：重命名 / 清除 Cookie">•••</span>
       <span class="acc-del" title="删除账号">✕</span>`;
     item.addEventListener('click', (e) => {
-      if (e.target.classList.contains('acc-del')) return;
+      if (e.target.classList.contains('acc-del') || e.target.classList.contains('acc-more')) return;
+      if (editing) return; // 正在改名时点击不要切换账号（切换会把焦点抢给网页）
       selectAccount(acc.id);
+    });
+    item.querySelector('.acc-more').addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.api.accountMenu(acc.id);
+    });
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      window.api.accountMenu(acc.id);
     });
     item.querySelector('.acc-del').addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -174,31 +186,50 @@ function renderList() {
   });
 }
 
-function startRename(item, acc) {
-  editing = true;
+async function startRename(item, acc) {
+  if (editing) return;
   const nameEl = item.querySelector('.acc-name');
+  if (!nameEl) return;
+  editing = true;
+  // 窄栏下名称是隐藏的，改名时临时展开显示输入框
   const input = document.createElement('input');
   input.className = 'rename-input';
   input.value = acc.name;
+  input.maxLength = 30;
+  input.setAttribute('spellcheck', 'false');
   nameEl.replaceWith(input);
-  input.focus();
-  input.select();
+  item.classList.add('renaming');
   let closed = false;
+  let composing = false; // 输入法组字中：Enter/Esc/失焦都不能当作确认
   const done = async (save) => {
     if (closed) return;
     closed = true;
     editing = false;
     const v = input.value.trim();
-    input.replaceWith(nameEl);
+    item.classList.remove('renaming');
+    if (input.isConnected) input.replaceWith(nameEl);
     if (save && v && v !== acc.name) await window.api.rename(acc.id, v);
+    listSig = ''; // 强制刷新列表
     render();
   };
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; });
   input.addEventListener('keydown', (e) => {
     e.stopPropagation();
+    // keyCode 229 = 输入法处理中的按键（部分环境 isComposing 在 compositionend 之后的那一下已为 false）
+    if (composing || e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') done(true);
     if (e.key === 'Escape') done(false);
   });
-  input.addEventListener('blur', () => done(true));
+  input.addEventListener('blur', () => {
+    if (composing) return;
+    done(true);
+  });
+  // 先把键盘焦点从网页视图拿回 UI 页面，再聚焦输入框，输入法才会接管
+  await window.api.focusUi();
+  if (closed) return;
+  input.focus();
+  input.select();
 }
 
 /** 添加账号：无需输入，新建独立会话并打开起始页；登录任意网站后自动按用户名/站点命名 */
@@ -215,9 +246,27 @@ els.back.addEventListener('click', () => window.api.nav('back'));
 els.fwd.addEventListener('click', () => window.api.nav('forward'));
 els.reload.addEventListener('click', () => window.api.nav('reload'));
 els.home.addEventListener('click', () => window.api.nav('home'));
+document.getElementById('sbToggle').addEventListener('click', () => window.api.toggleSidebar());
+
+// 主菜单 / 右键菜单的「重命名」
+window.api.onRenameStart((id) => {
+  const acc = state.accounts.find((a) => a.id === id);
+  if (!acc || editing) return;
+  const idx = state.accounts.indexOf(acc);
+  const item = els.list.children[idx];
+  if (!item) return;
+  // 窄栏下名称不可见，改名前临时展开侧边栏
+  const go = () => startRename(item, acc);
+  if (state.sidebarCollapsed) {
+    window.api.toggleSidebar(false).then(() => setTimeout(go, 80));
+  } else {
+    go();
+  }
+});
 
 els.url.addEventListener('keydown', (e) => {
   e.stopPropagation();
+  if (e.isComposing || e.keyCode === 229) return; // 输入法选词时的 Enter 不是「前往」
   if (e.key === 'Enter') {
     window.api.openUrl(els.url.value.trim());
     els.url.blur();
