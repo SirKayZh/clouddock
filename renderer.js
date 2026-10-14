@@ -11,11 +11,15 @@ const els = {
   badge: document.getElementById('activeBadge'),
   addBtn: document.getElementById('btnAdd'),
   footer: document.getElementById('sbFooter'),
+  tabbar: document.getElementById('tabbar'),
+  tablist: document.getElementById('tablist'),
+  tabNew: document.getElementById('tabNew'),
 };
 
 let state = {
   accounts: [],
   activeId: null,
+  activeTabId: null,
   url: '',
   title: '',
   canGoBack: false,
@@ -46,8 +50,35 @@ async function selectAccount(id) {
 
 function render() {
   renderToolbar();
+  renderTabbar();
   if (!editing) renderList();
   els.empty.style.display = state.accounts.length === 0 ? 'flex' : 'none';
+}
+
+function renderTabbar() {
+  const acc = activeAccount();
+  els.tabbar.style.display = acc ? 'flex' : 'none';
+  if (!acc) return;
+  els.tablist.innerHTML = '';
+  acc.tabs.forEach((tab) => {
+    const el = document.createElement('div');
+    el.className = 'tab' + (tab.id === state.activeTabId ? ' active' : '');
+    const title = tab.title || '新标签页';
+    el.innerHTML = `
+      <span class="tab-title" title="${escapeHtml(tab.url || '')}">${escapeHtml(title)}</span>
+      <span class="tab-close" title="关闭 (⌘W)">✕</span>`;
+    el.addEventListener('click', (e) => {
+      if (!e.target.classList.contains('tab-close')) window.api.switchTab(tab.id);
+    });
+    el.querySelector('.tab-close').addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.api.closeTab(tab.id);
+    });
+    el.addEventListener('auxclick', (e) => {
+      if (e.button === 1) window.api.closeTab(tab.id);
+    });
+    els.tablist.appendChild(el);
+  });
 }
 
 function renderToolbar() {
@@ -166,6 +197,7 @@ function showAddForm() {
 
 els.addBtn.addEventListener('click', showAddForm);
 document.getElementById('btnAddEmpty').addEventListener('click', showAddForm);
+els.tabNew.addEventListener('click', () => window.api.newTab());
 els.back.addEventListener('click', () => window.api.nav('back'));
 els.fwd.addEventListener('click', () => window.api.nav('forward'));
 els.reload.addEventListener('click', () => window.api.nav('reload'));

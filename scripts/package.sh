@@ -21,6 +21,11 @@ mkdir -p "$SRCDIR"
 cp package.json package-lock.json tsconfig.json index.html renderer.js README.md "$SRCDIR/"
 cp -R src dist "$SRCDIR/"
 (cd "$SRCDIR" && npm install --no-audit --no-fund)
+# electron 二进制 postinstall 可能静默失败，兜底手动补装
+if [ ! -f "$SRCDIR/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" ]; then
+  echo "==> electron 二进制缺失，手动补装"
+  (cd "$SRCDIR/node_modules/electron" && node install.js)
+fi
 
 APP="$STAGE/CloudDock.app"
 ELECTRON_APP="$SRCDIR/node_modules/electron/dist/Electron.app"

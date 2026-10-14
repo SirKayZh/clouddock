@@ -131,6 +131,46 @@
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
     #content { flex: 1; position: relative; }
+
+    /* ---------- 标签栏 ---------- */
+    #tabbar {
+      height: 36px; flex: none; display: flex; align-items: center;
+      gap: 4px; padding: 4px 8px 0 8px;
+      background: var(--bg); border-bottom: 1px solid var(--line);
+      -webkit-app-region: drag;
+    }
+    #tabbar .tab, #tabbar .tab-new { -webkit-app-region: no-drag; }
+    #tablist {
+      display: flex; align-items: flex-end; gap: 4px;
+      flex: 0 1 auto; overflow-x: auto; height: 100%;
+    }
+    #tablist::-webkit-scrollbar { height: 0; }
+    .tab {
+      display: flex; align-items: center; gap: 6px;
+      height: 31px; min-width: 90px; max-width: 200px; flex: 0 1 auto;
+      padding: 0 8px 0 12px; border-radius: 8px 8px 0 0;
+      background: #E7ECF4; cursor: pointer; user-select: none;
+      font-size: 12px; color: #444E63;
+    }
+    .tab:hover { background: #EDF1F8; }
+    .tab.active { background: #fff; color: var(--blue); font-weight: 600; }
+    .tab-title {
+      flex: 1; min-width: 0; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .tab-close {
+      display: flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; border-radius: 4px; flex: none;
+      font-size: 10px; color: transparent;
+    }
+    .tab:hover .tab-close { color: #98A2B8; }
+    .tab-close:hover { color: #E54545 !important; background: #FDECEC; }
+    .tab-new {
+      width: 28px; height: 26px; flex: none; border: none; border-radius: 6px;
+      background: transparent; font-size: 16px; color: #444E63; cursor: pointer;
+    }
+    .tab-new:hover { background: #E9EFF9; }
+
     #empty {
       position: absolute; inset: 0; display: flex;
       align-items: center; justify-content: center;
@@ -162,6 +202,10 @@
         <button id="navHome" class="tb-btn" title="控制台首页">⌂</button>
         <input id="urlInput" placeholder="https://console.cloud.tencent.com/" spellcheck="false">
         <div id="activeBadge"></div>
+      </div>
+      <div id="tabbar" style="display:none">
+        <div id="tablist"></div>
+        <button id="tabNew" class="tab-new" title="新建标签页 (⌘T)">＋</button>
       </div>
       <div id="content">
         <div id="empty">

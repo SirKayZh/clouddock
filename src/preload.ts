@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('api', {
   rename: (id: string, name: string): Promise<boolean> =>
     ipcRenderer.invoke('accounts:rename', id, name),
   switch: (id: string): Promise<boolean> => ipcRenderer.invoke('accounts:switch', id),
+  newTab: (url?: string): Promise<boolean> => ipcRenderer.invoke('tabs:new', url),
+  closeTab: (tabId: string): Promise<boolean> => ipcRenderer.invoke('tabs:close', tabId),
+  switchTab: (tabId: string): Promise<boolean> => ipcRenderer.invoke('tabs:switch', tabId),
   nav: (action: 'back' | 'forward' | 'reload' | 'stop' | 'home'): Promise<void> =>
     ipcRenderer.invoke('nav:action', action),
   openUrl: (url: string): Promise<boolean> => ipcRenderer.invoke('nav:url', url),
