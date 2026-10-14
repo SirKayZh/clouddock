@@ -33,8 +33,9 @@
       display: flex; flex-direction: column;
     }
     .sb-header {
-      height: 52px; flex: none; display: flex; align-items: center;
-      padding-left: 84px; padding-right: 12px;
+      /* 上方 40px 留给 macOS 红绿灯，品牌放在红绿灯下面 */
+      height: 84px; flex: none; display: flex; align-items: center;
+      padding: 38px 14px 0 16px;
       -webkit-app-region: drag;
     }
     .sb-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -46,16 +47,16 @@
 
     .acc-item {
       display: flex; align-items: center; gap: 10px;
-      height: 56px; padding: 0 10px; border-radius: 10px;
+      height: 48px; padding: 0 10px; border-radius: 10px;
       cursor: pointer; user-select: none; position: relative;
     }
     .acc-item:hover { background: var(--rail-hover); }
     .acc-item.active { background: var(--rail-sel); box-shadow: 0 1px 3px rgba(40, 90, 160, .12); }
     .acc-item.active .acc-name { color: var(--blue); }
     .acc-avatar {
-      width: 38px; height: 38px; border-radius: 10px; flex: none;
+      width: 30px; height: 30px; border-radius: 8px; flex: none;
       display: flex; align-items: center; justify-content: center;
-      color: #fff; font-size: 16px; font-weight: 700;
+      color: #fff; font-size: 13px; font-weight: 700;
     }
     .acc-label { display: none; }
     .acc-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -95,8 +96,8 @@
     /* ---------- 侧边栏收起（窄栏只显示头像，宽度须与主进程 RAIL_W=88 一致） ---------- */
     #sidebar { transition: none; }
     body.collapsed #sidebar { width: 88px; }
-    body.collapsed .sb-header { padding: 0; }
-    body.collapsed .sb-brand,
+    body.collapsed .sb-header { padding: 38px 0 0; justify-content: center; }
+    body.collapsed .sb-title,
     body.collapsed .acc-info,
     body.collapsed .acc-hint,
     body.collapsed .acc-del,
@@ -107,9 +108,9 @@
     /* 窄栏：圆角方形头像居中，名字缩小显示在下方（企业微信一样） */
     body.collapsed .acc-item {
       flex-direction: column; justify-content: center; gap: 4px;
-      height: auto; padding: 8px 0 6px; margin: 2px 8px;
+      height: auto; padding: 6px 0 5px; margin: 2px 8px;
     }
-    body.collapsed .acc-avatar { width: 44px; height: 44px; font-size: 18px; }
+    body.collapsed .acc-avatar { width: 34px; height: 34px; font-size: 14px; }
     body.collapsed .acc-label {
       display: block; max-width: 100%; padding: 0 4px; font-size: 11px; color: #4A5D7A;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
