@@ -7,12 +7,13 @@ import {
   shell,
   Menu,
   dialog,
+  crashReporter,
 } from 'electron';
 import type { Rectangle, WebContents, Session, MenuItemConstructorOptions } from 'electron';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import * as dns from 'node:dns';
+import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import type { Account, AppState, CapturedLogin, FillPayload, PendingSave, Tab } from './types';
 import {
@@ -25,6 +26,8 @@ import {
   isHttpUrl,
   sanitizeAccount,
 } from './pure';
+import { vault } from './vaultClient';
+import { checkForUpdatesInteractive, updateTokenFromArgv, reconcilePendingUpdate } from './updater';
 
 /*
  * 通用多账号浏览器：账号 = 一个独立会话容器，可登录任意网站。
@@ -48,7 +51,7 @@ function sidebarW(): number {
 }
 const TOPBAR_H = 52;
 const TABBAR_H = 36;
-/** 「保存登录信息」提示条高度（与 index.html #banner 一致） */
+/** 「保存登录信息」提示条 / 「恢复会话」横幅高度（与 index.html #banner 一致） */
 const BANNER_H = 56;
 
 let win: BrowserWindow | null = null;
@@ -65,6 +68,48 @@ if (process.env.CLOUDDOCK_DATA_DIR) {
 // 凭据加密不再使用 Chromium 的钥匙串条目（"CloudDock Safe Storage"，授权绑定 ad-hoc 签名，每次更新都会重新弹框），
 // 声明 mock 钥匙串，确保 Chromium 任何内部路径都不会触发钥匙串授权弹窗。
 app.commandLine.appendSwitch('use-mock-keychain');
+
+/* ---------- 崩溃收集（crashpad）与异常退出检测 ---------- */
+/*
+ *  - crashReporter：主/渲染进程崩溃时由 Chromium 内建 crashpad 落 minidump 到
+ *    app.getPath('crashDumps')；不上传（无服务器），仅本地留存，启动时只保留最近 5 份
+ *  - running.flag：应用存活标记。启动即写、正常退出（before-quit/will-quit）删除；
+ *    下次启动发现标记仍在 = 上次是崩溃/强杀，进入「恢复会话询问」流程（Chrome 同款横幅）
+ */
+crashReporter.start({
+  submitURL: '',
+  uploadToServer: false,
+  compress: true,
+  globalExtra: { version: app.getVersion(), platform: process.platform },
+});
+
+function runningFlagFile(): string {
+  return path.join(app.getPath('userData'), 'running.flag');
+}
+/** 更新启动参数（--clouddock-update-token <file>）：非空表示本次由更新流程拉起（须先于 crashedLastRun 判定） */
+const updateToken = updateTokenFromArgv(process.argv);
+/**
+ * 上次是否异常退出（模块加载时判定一次，全程不变）。
+ * 更新启动时老实例还没来得及删标记（它在等我们握手），此时标记在不算崩溃。
+ */
+const crashedLastRun = fs.existsSync(runningFlagFile()) && !updateToken;
+/** 用户尚未对「恢复上次会话」做出选择（true 时渲染层显示恢复横幅，不自动恢复标签页） */
+let crashRecoveryPending = false;
+
+/** 只保留最近 5 份崩溃转储，避免长期使用磁盘堆积 */
+function pruneCrashDumps(): void {
+  try {
+    const dir = app.getPath('crashDumps');
+    const dumps = fs
+      .readdirSync(dir)
+      .filter((n) => n.endsWith('.dmp'))
+      .map((n) => ({ name: n, mtime: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const d of dumps.slice(5)) fs.rmSync(path.join(dir, d.name), { force: true });
+  } catch {
+    /* 目录不存在：首次运行，无需清理 */
+  }
+}
 
 /* ---------- 持久化 ---------- */
 
@@ -161,31 +206,14 @@ function pickColor(): string {
  *  - 任意网站登录成功后询问「保存 / 更新密码」，可选「从不保存此网站」
  *  - 已保存的网站再次打开登录页时自动填充（同一网站多个用户名时填最近使用的）
  *  - 凭据按「账号(会话分区) + 网站 origin + 用户名」存储：账号之间互不可见；只会填充到与保存时完全相同 origin 的页面/iframe
- *  - 安全：密码用 AES-256-GCM 加密、密钥存在系统钥匙串（经 /usr/bin/security 读写，不会因应用重新签名而反复弹授权框），磁盘只存密文；加密不可用时功能自动关闭，绝不明文落盘；密码永不下发到界面进程
+ *  - 安全（Chrome helper 最小权限进程模型的移植）：
+ *      * 主密钥与 AES-256-GCM 加解密全部在 utilityProcess（vaultChild）内，
+ *        密钥/明文/密文都不进主进程内存；
+ *      * 主进程只持有非敏感元数据镜像（站点、用户名展示、更新时间）用于菜单展示；
+ *      * 子进程不可用时密码保存/填充整体禁用，绝不明文落盘；
+ *      * 密码永不下发到界面进程
  *  - 管理入口：菜单「密码」（查看/删除/恢复提示），不占用主界面
  */
-
-interface CredEntry {
-  id: string;
-  accountId: string;
-  origin: string;
-  /** 展示用用户名（非敏感），如「10001 / alice」 */
-  label: string;
-  /** 'v2:' + base64(iv|tag|密文)：JSON { fields, password } */
-  enc: string;
-  updatedAt: number;
-}
-interface NeverSave {
-  accountId: string;
-  origin: string;
-}
-interface CredStore {
-  entries: CredEntry[];
-  never: NeverSave[];
-}
-
-let credStore: CredStore = { entries: [], never: [] };
-const MAX_ENTRIES_PER_ACCOUNT = 500;
 
 /** 与 Chrome 一致：http/https 页面均可；以 origin（协议+主机+端口）精确绑定 */
 function credOrigin(raw: string | undefined): string | null {
@@ -199,162 +227,9 @@ function credOrigin(raw: string | undefined): string | null {
   }
 }
 
-function credFile(): string {
-  return path.join(app.getPath('userData'), 'credentials.json');
-}
-
-/*
- * 密钥管理：随机 32 字节主密钥存入登录钥匙串（服务名 KEY_SERVICE），通过系统自带的 /usr/bin/security 读写。
- * 不用 Electron safeStorage：它的钥匙串条目按「应用代码签名」授权，本应用是 ad-hoc 签名，
- * 每次重新打包签名都会变，导致每次都弹「想要使用钥匙串中的机密信息」。
- * /usr/bin/security 由苹果签名、身份固定，条目由它创建，之后读取不再弹框。
- */
-const KEY_SERVICE = 'CloudDock Credential Key';
-const KEY_ACCOUNT = 'clouddock';
-const SECURITY_BIN = '/usr/bin/security';
-let masterKeyCache: Buffer | null = null;
-
-function keychainRead(): Buffer | null {
-  try {
-    const out = execFileSync(SECURITY_BIN, ['find-generic-password', '-s', KEY_SERVICE, '-a', KEY_ACCOUNT, '-w'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 15_000,
-    }).trim();
-    const buf = Buffer.from(out, 'hex');
-    return buf.length === 32 ? buf : null;
-  } catch {
-    return null;
-  }
-}
-
-function masterKey(): Buffer | null {
-  if (masterKeyCache) return masterKeyCache;
-  if (process.platform !== 'darwin') return null;
-  let key = keychainRead();
-  if (!key) {
-    const fresh = randomBytes(32);
-    try {
-      // 仅首次创建时密钥短暂出现在命令行参数中（毫秒级），之后只经 stdout 读取
-      execFileSync(SECURITY_BIN, ['add-generic-password', '-s', KEY_SERVICE, '-a', KEY_ACCOUNT, '-w', fresh.toString('hex'), '-U'], {
-        stdio: 'ignore',
-        timeout: 15_000,
-      });
-    } catch (err) {
-      console.error('[clouddock] keychain write failed:', err);
-      return null;
-    }
-    key = keychainRead();
-    if (!key || !key.equals(fresh)) return null;
-  }
-  masterKeyCache = key;
-  return key;
-}
-
-function credAvailable(): boolean {
-  return masterKey() !== null;
-}
-
-const ENC_PREFIX = 'v2:';
-
-function encryptJson(plain: string): string | null {
-  const key = masterKey();
-  if (!key) return null;
-  const iv = randomBytes(12);
-  const c = createCipheriv('aes-256-gcm', key, iv);
-  const ct = Buffer.concat([c.update(plain, 'utf-8'), c.final()]);
-  return ENC_PREFIX + Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64');
-}
-
-function decryptJson(enc: string): string | null {
-  const key = masterKey();
-  if (!key || !enc.startsWith(ENC_PREFIX)) return null; // 旧版 safeStorage 密文无法读取，视为未保存
-  try {
-    const raw = Buffer.from(enc.slice(ENC_PREFIX.length), 'base64');
-    if (raw.length < 29) return null;
-    const d = createDecipheriv('aes-256-gcm', key, raw.subarray(0, 12));
-    d.setAuthTag(raw.subarray(12, 28));
-    return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString('utf-8');
-  } catch {
-    return null;
-  }
-}
-
-function loadCreds(): void {
-  const file = credFile();
-  credStore = { entries: [], never: [] };
-  try {
-    const data = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<CredStore>;
-    const seen = new Set<string>();
-    for (const r of Array.isArray(data.entries) ? data.entries : []) {
-      if (!r || typeof r !== 'object') continue;
-      if (typeof r.id !== 'string' || seen.has(r.id)) continue;
-      if (typeof r.accountId !== 'string' || typeof r.origin !== 'string') continue;
-      if (typeof r.enc !== 'string' || typeof r.label !== 'string') continue;
-      seen.add(r.id);
-      credStore.entries.push({
-        id: r.id,
-        accountId: r.accountId,
-        origin: r.origin,
-        label: r.label.slice(0, 120),
-        enc: r.enc,
-        updatedAt: typeof r.updatedAt === 'number' ? r.updatedAt : 0,
-      });
-    }
-    for (const n of Array.isArray(data.never) ? data.never : []) {
-      if (n && typeof n.accountId === 'string' && typeof n.origin === 'string') {
-        credStore.never.push({ accountId: n.accountId, origin: n.origin });
-      }
-    }
-  } catch {
-    if (fs.existsSync(file)) {
-      try {
-        fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  // 清理已不存在账号的残留
-  credStore.entries = credStore.entries.filter((e) => accounts.some((a) => a.id === e.accountId));
-  credStore.never = credStore.never.filter((n) => accounts.some((a) => a.id === n.accountId));
-}
-
-function saveCreds(): void {
-  try {
-    const file = credFile();
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    writeFileAtomic(file, JSON.stringify(credStore, null, 2), 0o600);
-  } catch (err) {
-    console.error('[clouddock] save credentials failed:', err);
-  }
-}
-
-function decryptEntry(e: CredEntry): FillPayload | null {
-  const plain = decryptJson(e.enc);
-  if (plain === null) return null;
-  try {
-    const obj = JSON.parse(plain) as Partial<FillPayload>;
-    if (!Array.isArray(obj.fields) || typeof obj.password !== 'string') return null;
-    return { fields: obj.fields.map(String), password: obj.password };
-  } catch {
-    return null; // 钥匙串变化/密文损坏：当作未保存
-  }
-}
-
-function entriesFor(accountId: string, origin: string): CredEntry[] {
-  return credStore.entries
-    .filter((e) => e.accountId === accountId && e.origin === origin)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-/** 比较登录用户名时忽略大小写与首尾空白（Alice / alice 视为同一个用户） */
-function normFields(f: string[]): string {
-  return f.map((x) => x.trim().toLowerCase()).join('\u0001');
-}
-
+/** 从不保存此网站（元数据在主进程镜像中，同步判断即可） */
 function isNever(accountId: string, origin: string): boolean {
-  return credStore.never.some((n) => n.accountId === accountId && n.origin === origin);
+  return vault.never.some((n) => n.accountId === accountId && n.origin === origin);
 }
 
 interface RawPending {
@@ -385,7 +260,7 @@ function credLabel(fields: string[]): string {
   return fields.filter(Boolean).join(' / ').slice(0, 120);
 }
 
-function onCaptured(wcId: number, frameUrl: string | undefined, raw: unknown): void {
+async function onCaptured(wcId: number, frameUrl: string | undefined, raw: unknown): Promise<void> {
   const ctx = wcMap.get(wcId);
   if (!ctx || !accounts.includes(ctx.acc)) return;
   const origin = credOrigin(frameUrl);
@@ -398,18 +273,15 @@ function onCaptured(wcId: number, frameUrl: string | undefined, raw: unknown): v
   // 用提交的用户名给账号自动命名（与是否保存密码无关；真正登录成功要等页面跳转，见 armPending）
   loginHint = { accountId: ctx.acc.id, tabId: ctx.tab.id, label: credLabel(fields), host: hostOf(origin), ts: Date.now() };
 
-  if (!credAvailable() || isNever(ctx.acc.id, origin)) return;
+  if (!vault.available || isNever(ctx.acc.id, origin)) return;
 
-  // 同一用户名已有记录？密码也相同 → 不打扰；密码不同 → 提示「更新」
-  let existingId: string | null = null;
-  for (const e of entriesFor(ctx.acc.id, origin)) {
-    const saved = decryptEntry(e);
-    if (saved && normFields(saved.fields) === normFields(fields)) {
-      if (saved.password === r.password) return;
-      existingId = e.id;
-      break;
-    }
-  }
+  // 同一用户名已有记录？密码也相同 → 不打扰；密码不同 → 提示「更新」（去重比较在 vault 子进程内完成）
+  const dedup = await vault.dedup(ctx.acc.id, origin, fields, r.password);
+  if (!dedup) return; // 子进程超时/不可用：当作未保存，不打扰
+  if (dedup.same) return;
+  const existingId = dedup.existingId;
+  if (!accounts.includes(ctx.acc)) return; // 等待期间账号可能被删除
+
   const prev = pendings.get(ctx.acc.id) ?? null;
   const hadBanner = !!prev?.armed;
   // 提示已展示且是同一次登录（同一份凭据）→ 保留原记录，用户没点之前不重置、不重复弹
@@ -518,15 +390,14 @@ function pendingForUi(): PendingSave | null {
   };
 }
 
+/** 删除账号时调用：清掉该账号全部已存密码与「从不保存」（实际删除在 vault 子进程完成） */
 function dropAccountCreds(id: string): void {
-  credStore.entries = credStore.entries.filter((e) => e.accountId !== id);
-  credStore.never = credStore.never.filter((n) => n.accountId !== id);
   if (pendings.has(id)) clearPending(id);
-  saveCreds();
+  void vault.dropAccount(id);
 }
 
 async function deleteCredEntry(entryId: string): Promise<void> {
-  const e = credStore.entries.find((x) => x.id === entryId);
+  const e = vault.entries.find((x) => x.id === entryId);
   if (!e || !win) return;
   const choice = await dialog.showMessageBox(win, {
     type: 'warning',
@@ -537,8 +408,7 @@ async function deleteCredEntry(entryId: string): Promise<void> {
     detail: `${hostOf(e.origin)} — ${e.label}`,
   });
   if (choice.response !== 0) return;
-  credStore.entries = credStore.entries.filter((x) => x.id !== entryId);
-  saveCreds();
+  await vault.removeEntry(entryId);
   sendState();
 }
 
@@ -554,7 +424,7 @@ async function clearAccountCreds(accountId: string): Promise<void> {
     detail: '同时会恢复该账号所有「从不保存」的网站。',
   });
   if (choice.response !== 0) return;
-  dropAccountCreds(accountId);
+  await vault.dropAccount(accountId);
   sendState();
 }
 
@@ -777,7 +647,9 @@ function applyPermissionPolicy(ses: Session): void {
 function viewBounds(): Rectangle {
   if (!win) return { x: 0, y: 0, width: 0, height: 0 };
   const [cw, ch] = win.getContentSize();
-  const top = TOPBAR_H + TABBAR_H + (pendingForUi() ? BANNER_H : 0);
+  // 「保存密码」提示条与「恢复会话」横幅等高，同一段时间最多显示一个
+  const hasBanner = pendingForUi() !== null || crashRecoveryPending;
+  const top = TOPBAR_H + TABBAR_H + (hasBanner ? BANNER_H : 0);
   return {
     x: sidebarW(),
     y: top,
@@ -812,6 +684,7 @@ function sendState(): void {
     isLoading: wc ? wc.isLoading() : false,
     pending: pendingForUi(),
     sidebarCollapsed,
+    crashRecovery: crashRecoveryPending,
   };
   refreshMenuIfNeeded();
   win.webContents.send('state:update', state);
@@ -819,7 +692,12 @@ function sendState(): void {
 
 /* ---------- 标签页视图 ---------- */
 
-function createTabView(acc: Account, tab: Tab): WebContentsView {
+/** 已预热（隐藏、仅 about:blank）尚未真正导航的 tab：首次切换时补加载目标地址 */
+const prewarmedTabs = new Set<string>();
+/** 预热上限：额外常驻渲染进程的内存代价（Chrome Aperitif 同样的取舍） */
+const PREWARM_MAX = 4;
+
+function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView {
   const ses = session.fromPartition(`persist:clouddock-${acc.id}`);
   // 去掉 UA 中的 Electron 标识，避免登录链路 UA 校验问题
   const ua = ses.getUserAgent().replace(/Electron\/[\d.]+\s*/i, '');
@@ -895,6 +773,19 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
   });
   wc.on('did-finish-load', () => {
     crashCount = 0;
+    // 仍处于预热状态（尚未转正）：不识别身份，只预热该会话分区的连接池。
+    // 转正（switchTab）会先移出 prewarmedTabs 再导航，之后的 did-finish-load 走正常路径。
+    if (prewarmedTabs.has(tab.id)) {
+      // no-cors fetch 即便被 CORS 拦截，DNS+TCP+TLS 握手也已完成——正是 Chrome preconnect 的效果。
+      if (acc.home && isHttpUrl(acc.home)) {
+        wc.executeJavaScript(
+          `fetch(${JSON.stringify(acc.home)}, { mode: 'no-cors', cache: 'no-store' }).catch(() => {})`,
+        ).catch(() => {
+          /* 预热失败无影响 */
+        });
+      }
+      return;
+    }
     // 兜底：页面加载完成后再识别一次（覆盖升级前已登录、Cookie 事件早于监听等情况）
     void detectAccountIdentity(acc.id);
   });
@@ -930,7 +821,13 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
     view.setBounds(viewBounds());
     view.setVisible(false);
   }
-  safeLoad(wc, isHttpUrl(tab.url) ? tab.url : startUrl());
+  if (prewarm) {
+    // 预热：只拉起渲染进程 + about:blank（渲染进程初始化是最贵的冷启动部分），目标地址等真正切换时再载
+    prewarmedTabs.add(tab.id);
+    safeLoad(wc, 'about:blank');
+  } else {
+    safeLoad(wc, isHttpUrl(tab.url) ? tab.url : startUrl());
+  }
   return view;
 }
 
@@ -950,6 +847,7 @@ function destroyTabView(tabId: string): void {
   if (!view) return;
   if (win) win.contentView.removeChildView(view);
   views.delete(tabId);
+  prewarmedTabs.delete(tabId);
   wcMap.delete(view.webContents.id);
   const p = findUnarmedByTab(tabId);
   if (p) pendings.delete(p.accountId);
@@ -971,6 +869,10 @@ function switchTab(tabId: string): boolean {
   acc.activeTabId = tabId;
   activeId = acc.id;
   const view = ensureTabView(acc, tab);
+  if (prewarmedTabs.delete(tab.id)) {
+    // 预热视图首次转正：渲染进程已在，只需导航到目标地址（Chrome Aperitif 的切换提速收益点）
+    safeLoad(view.webContents, isHttpUrl(tab.url) ? tab.url : startUrl());
+  }
   showOnly(tabId);
   view.setBounds(viewBounds());
   view.webContents.focus();
@@ -1145,7 +1047,10 @@ async function clearAccountData(acc: Account, scope: ClearScope): Promise<boolea
     delete acc.uin;
     delete acc.ownerUin;
   }
-  for (const t of acc.tabs) views.get(t.id)?.webContents.reload();
+  for (const t of acc.tabs) {
+    if (prewarmedTabs.has(t.id)) continue; // 预热视图没载真实页面，无需重载
+    views.get(t.id)?.webContents.reload();
+  }
   scheduleSave();
   sendState();
   return true;
@@ -1176,7 +1081,10 @@ async function clearAllAccountsCookies(): Promise<boolean> {
     }
     delete a.uin;
     delete a.ownerUin;
-    for (const t of a.tabs) views.get(t.id)?.webContents.reload();
+    for (const t of a.tabs) {
+      if (prewarmedTabs.has(t.id)) continue;
+      views.get(t.id)?.webContents.reload();
+    }
   }
   scheduleSave();
   sendState();
@@ -1248,6 +1156,83 @@ async function removeAccount(id: string): Promise<boolean> {
     console.error('[clouddock] clear session failed:', err);
   }
   return true;
+}
+
+/* ---------- Aperitif 式空闲预热 ---------- */
+
+/**
+ * 空闲时段预热（Chrome Aperitif 的移植）：
+ *  - 给尚无视图的账号（有首页的）预建隐藏 WebContentsView（about:blank）——
+ *    渲染进程初始化是账号切换冷启动的大头，提前拉起后切换只剩导航时间；
+ *  - 视图就绪后向账号首页发起 no-cors fetch，预热该会话分区的 DNS+TCP+TLS 连接池；
+ *  - DNS 预解析所有账号首页（OS 层缓存，免费）。
+ * 上限 PREWARM_MAX，超出的账号不做进程预热，只做 DNS 预解析。
+ */
+let prewarmTimer: NodeJS.Timeout | null = null;
+function prewarmViews(): void {
+  if (!win || win.isDestroyed()) return;
+  let made = 0;
+  for (const acc of accounts) {
+    if (made >= PREWARM_MAX) break;
+    if (!acc.home || !isHttpUrl(acc.home)) continue;
+    ensureAccountTabs(acc);
+    const tab = acc.tabs.find((t) => t.id === acc.activeTabId) ?? acc.tabs[0];
+    if (!tab || views.has(tab.id)) continue;
+    if (!accounts.includes(acc)) continue;
+    createTabView(acc, tab, true);
+    made += 1;
+  }
+  for (const acc of accounts) {
+    if (!acc.home || !isHttpUrl(acc.home)) continue;
+    try {
+      void dns.promises.lookup(new URL(acc.home).hostname, { all: true }).catch(() => {
+        /* DNS 预解析失败无影响 */
+      });
+    } catch {
+      /* URL 已校验 */
+    }
+  }
+}
+
+/** 延迟调度预热：启动恢复完成后再预热，不与首屏抢资源；恢复横幅期间延后 */
+function schedulePrewarm(delayMs: number): void {
+  if (prewarmTimer) clearTimeout(prewarmTimer);
+  prewarmTimer = setTimeout(() => {
+    prewarmTimer = null;
+    if (crashRecoveryPending) return; // 用户还没决定是否恢复，别预建一堆视图
+    prewarmViews();
+  }, delayMs);
+  prewarmTimer.unref?.();
+}
+
+/* ---------- 崩溃恢复 ---------- */
+
+/**
+ * 用户对「恢复上次会话」横幅做出选择（Chrome 恢复横幅同款交互）。
+ *  - restore=true：照常恢复上次的账号与标签页
+ *  - restore=false：每个账号回到干净的起始页（账号本身与登录态保留）
+ */
+function resolveCrash(restore: boolean): void {
+  if (!crashRecoveryPending) return;
+  crashRecoveryPending = false;
+  if (!restore) {
+    for (const acc of accounts) {
+      // 清掉恢复横幅期间可能已存在的旧视图（横幅期间通常没有，防御性清理）
+      for (const old of acc.tabs) destroyTabView(old.id);
+      const t = newTabRecord();
+      acc.tabs = [t];
+      acc.activeTabId = t.id;
+    }
+    saveAccountsNow();
+  }
+  // 无论恢复与否都落到上次账号上：恢复=打开上次的标签页；不恢复=该账号干净的起始页
+  if (accounts.length > 0) {
+    const target = accounts.find((a) => a.id === savedActiveId) ?? accounts[0];
+    switchAccount(target.id);
+  } else {
+    sendState();
+  }
+  schedulePrewarm(15_000);
 }
 
 /* ---------- IPC ---------- */
@@ -1322,7 +1307,7 @@ function registerIpc(): void {
   // 页面注入脚本 -> 主进程：发送方必须是账号标签页里的 http(s) 页面
   ipcMain.on('cred:captured', (e, raw: unknown) => {
     if (!credOrigin(e.sender.getURL())) return;
-    onCaptured(e.sender.id, e.senderFrame?.url, raw);
+    void onCaptured(e.sender.id, e.senderFrame?.url, raw);
   });
 
   // 登录过程中的心跳（页面仍在输入）与「表单已消失」。
@@ -1359,56 +1344,31 @@ function registerIpc(): void {
   });
 
   // 只回给【origin 与保存时完全一致】的页面/iframe；顶层页面也必须是 http(s)
-  ipcMain.handle('cred:get', (e): FillPayload | null => {
+  // 解密在 vault 子进程完成，明文只发往发起请求的页面，不落盘、不进 UI 进程
+  ipcMain.handle('cred:get', async (e): Promise<FillPayload | null> => {
     const ctx = wcMap.get(e.sender.id);
     if (!ctx || !accounts.includes(ctx.acc)) return null;
     const origin = credOrigin(e.senderFrame?.url);
     if (!origin || !credOrigin(e.sender.getURL())) return null;
-    const best = entriesFor(ctx.acc.id, origin)[0];
-    return best ? decryptEntry(best) : null;
+    if (!vault.available) return null;
+    return vault.decrypt(ctx.acc.id, origin);
   });
 
   // 以下来自界面进程（preload 暴露的 api），只接受主窗口
   const fromUi = (e: Electron.IpcMainInvokeEvent): boolean => !!win && e.sender === win.webContents;
 
-  ipcMain.handle('cred:save', (e): boolean => {
+  ipcMain.handle('cred:save', async (e): Promise<boolean> => {
     // banner 只显示当前账号的提示，保存也只作用于该账号名下的捕获
     const p = activeId ? pendings.get(activeId) : undefined;
-    if (!fromUi(e) || !p?.armed || !credAvailable()) return false;
+    if (!fromUi(e) || !p?.armed || !vault.available) return false;
     const acc = accounts.find((a) => a.id === p.accountId);
     if (!acc) {
       clearPending(p.accountId);
       sendState();
       return false;
     }
-    try {
-      const enc = encryptJson(JSON.stringify(p.login));
-      if (!enc) return false;
-      const now = Date.now();
-      const exist = p.existingId ? credStore.entries.find((x) => x.id === p.existingId) : undefined;
-      if (exist) {
-        exist.enc = enc;
-        exist.updatedAt = now;
-      } else {
-        credStore.entries.push({
-          id: randomBytes(8).toString('hex'),
-          accountId: acc.id,
-          origin: p.origin,
-          label: credLabel(p.login.fields),
-          enc,
-          updatedAt: now,
-        });
-        // 单账号上限：淘汰最旧的
-        const mine = credStore.entries.filter((x) => x.accountId === acc.id).sort((a, b) => a.updatedAt - b.updatedAt);
-        for (const old of mine.slice(0, Math.max(0, mine.length - MAX_ENTRIES_PER_ACCOUNT))) {
-          credStore.entries = credStore.entries.filter((x) => x.id !== old.id);
-        }
-      }
-      saveCreds();
-    } catch (err) {
-      console.error('[clouddock] encrypt credentials failed:', err);
-      return false;
-    }
+    const ok = await vault.save(p.accountId, p.origin, credLabel(p.login.fields), p.login, p.existingId);
+    if (!ok) return false;
     clearPending(p.accountId);
     sendState();
     return true;
@@ -1419,11 +1379,17 @@ function registerIpc(): void {
     const p = activeId ? pendings.get(activeId) : undefined;
     if (!fromUi(e) || !p) return false;
     if (never === true && !isNever(p.accountId, p.origin)) {
-      credStore.never.push({ accountId: p.accountId, origin: p.origin });
-      saveCreds();
+      void vault.addNever(p.accountId, p.origin);
     }
     clearPending(p.accountId);
     sendState();
+    return true;
+  });
+
+  /* ----- 崩溃恢复横幅 ----- */
+  ipcMain.handle('crash:resolve', (e, restore: unknown): boolean => {
+    if (!fromUi(e)) return false;
+    resolveCrash(restore === true);
     return true;
   });
 
@@ -1485,8 +1451,10 @@ function registerIpc(): void {
 /** 「密码」菜单：列出当前账号已保存的密码（点击删除），恢复「从不保存」，全部清除 */
 function passwordMenu(): MenuItemConstructorOptions {
   const acc = activeAccount();
-  const mine = acc ? credStore.entries.filter((e) => e.accountId === acc.id).sort((a, b) => b.updatedAt - a.updatedAt) : [];
-  const neverCount = acc ? credStore.never.filter((n) => n.accountId === acc.id).length : 0;
+  const mine = vault.entries
+    .filter((e) => e.accountId === acc?.id)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const neverCount = vault.never.filter((n) => n.accountId === acc?.id).length;
   const MAX_SHOW = 30;
   const items: MenuItemConstructorOptions[] = [
     { label: acc ? `「${acc.name}」已保存的密码（点击删除）` : '请先选择账号', enabled: false },
@@ -1505,9 +1473,7 @@ function passwordMenu(): MenuItemConstructorOptions {
       enabled: neverCount > 0,
       click: () => {
         if (!acc) return;
-        credStore.never = credStore.never.filter((n) => n.accountId !== acc.id);
-        saveCreds();
-        sendState();
+        void vault.restoreNever(acc.id).then(() => sendState());
       },
     },
     {
@@ -1538,26 +1504,23 @@ function accountMenu(): MenuItemConstructorOptions {
 
 let menuSig = '';
 /** 当前账号 / 已存密码变化时才重建菜单（sendState 很频繁） */
-function refreshMenuIfNeeded(): void {
-  const sig = JSON.stringify([
+function menuSignature(): string {
+  return JSON.stringify([
     activeId,
     activeAccount()?.name,
     accounts.length,
-    credStore.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
-    credStore.never.filter((n) => n.accountId === activeId).length,
+    vault.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
+    vault.never.filter((n) => n.accountId === activeId).length,
   ]);
+}
+function refreshMenuIfNeeded(): void {
+  const sig = menuSignature();
   if (sig === menuSig) return;
   buildMenu();
 }
 
 function buildMenu(): void {
-  menuSig = JSON.stringify([
-    activeId,
-    activeAccount()?.name,
-    accounts.length,
-    credStore.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
-    credStore.never.filter((n) => n.accountId === activeId).length,
-  ]);
+  menuSig = menuSignature();
   const zoom = (delta: number): void => {
     const wc = activeWc();
     if (!wc) return;
@@ -1614,6 +1577,27 @@ function buildMenu(): void {
     },
     accountMenu(),
     passwordMenu(),
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '检查更新…',
+          click: () =>
+            void checkForUpdatesInteractive(() => {
+              // 更新握手成功、老进程退出前的清理（process.exit 不触发 before-quit）
+              if (saveTimer) clearTimeout(saveTimer);
+              saveAccountsNow();
+              try {
+                fs.rmSync(runningFlagFile(), { force: true });
+              } catch {
+                /* ignore */
+              }
+            }),
+        },
+        { type: 'separator' },
+        { role: 'about' },
+      ],
+    },
     // 不用 role:'windowMenu'：它自带「关闭窗口 ⌘W」，会与「关闭标签页 ⌘W」抢快捷键
     {
       label: '窗口',
@@ -1642,7 +1626,18 @@ function createWindow(): void {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'index.html'));
-  win.once('ready-to-show', () => win?.show());
+  win.once('ready-to-show', () => {
+    win?.show();
+    if (updateToken) {
+      // 更新启动：新版本 UI 已就绪，写握手信号让老实例退出，再补拿单实例锁
+      try {
+        fs.writeFileSync(updateToken, 'ok', { encoding: 'utf-8' });
+      } catch {
+        /* 写失败由老实例 30s 超时回滚兜底 */
+      }
+      retrySingleInstanceLock();
+    }
+  });
 
   const relayout = (): void => layoutViews();
   win.on('resize', relayout);
@@ -1657,6 +1652,11 @@ function createWindow(): void {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   win.webContents.on('did-finish-load', () => {
+    if (crashRecoveryPending) {
+      // 上次崩溃：不自动恢复标签页，横幅等用户选择（恢复 / 重新开始）
+      sendState();
+      return;
+    }
     if (activeId === null && accounts.length > 0) {
       // 直接恢复上次使用的账号，避免先白白加载第一个账号再切换
       const target = accounts.find((a) => a.id === savedActiveId) ?? accounts[0];
@@ -1669,7 +1669,20 @@ function createWindow(): void {
 
 /* ---------- 应用生命周期 ---------- */
 
-const gotLock = app.requestSingleInstanceLock();
+/** 更新启动时老实例仍握着单实例锁：写完握手信号后轮询补拿（老实例收到信号即退出） */
+function retrySingleInstanceLock(): void {
+  const deadline = Date.now() + 30_000;
+  const tryLock = (): void => {
+    // 拿到锁（老实例已退出）即可停；拿不到（老实例卡死）超时后放弃，本会话多开保护失效可接受
+    if (app.requestSingleInstanceLock()) return;
+    if (Date.now() > deadline) return;
+    setTimeout(tryLock, 500).unref?.();
+  };
+  setTimeout(tryLock, 500).unref?.();
+}
+
+// 更新启动的瞬间老实例还握着锁（它在等我们的握手信号），此时拿不到锁是预期内的
+const gotLock = app.requestSingleInstanceLock() || !!updateToken;
 if (!gotLock) {
   app.quit();
 } else {
@@ -1681,17 +1694,55 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    // 上次更新的兜底清理（成功确认 / 失败残渣）
+    reconcilePendingUpdate();
+    // 运行标记：本次会话存活信号（崩溃/强杀时不会被删，下次启动据此进入恢复流程）
+    try {
+      fs.mkdirSync(app.getPath('userData'), { recursive: true });
+      writeFileAtomic(runningFlagFile(), String(Date.now()));
+    } catch (err) {
+      console.error('[clouddock] write running flag failed:', err);
+    }
+    pruneCrashDumps();
+
     loadAccounts();
-    loadCreds();
+    // 上次异常退出 → 恢复横幅；正常退出 → 直接恢复上次会话（原行为）
+    crashRecoveryPending = crashedLastRun && accounts.length > 0;
+
+    // 密码库子进程（utilityProcess）：密钥与加解密隔离在子进程内
+    void vault
+      .init(app.getPath('userData'), accounts.map((a) => a.id))
+      .then(() => {
+        buildMenu(); // vault 可用性可能影响菜单项，初始化完成后刷一次
+        sendState();
+      });
+
     registerIpc();
     buildMenu();
     applyPermissionPolicy(session.defaultSession);
     createWindow();
+    schedulePrewarm(15_000);
   });
 
   app.on('before-quit', () => {
     if (saveTimer) clearTimeout(saveTimer);
+    if (prewarmTimer) clearTimeout(prewarmTimer);
     saveAccountsNow();
+    // 正常退出：删运行标记（下次启动不做崩溃恢复）
+    try {
+      fs.rmSync(runningFlagFile(), { force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // 兜底：任何退出路径（含非正常但事件仍触发的场景）都清掉标记
+  app.on('will-quit', () => {
+    try {
+      fs.rmSync(runningFlagFile(), { force: true });
+    } catch {
+      /* ignore */
+    }
   });
 
   app.on('window-all-closed', () => {

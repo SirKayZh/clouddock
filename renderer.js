@@ -28,6 +28,7 @@ let state = {
   isLoading: false,
   pending: null,
   sidebarCollapsed: false,
+  crashRecovery: false,
 };
 let editing = false; // 添加/重命名进行中时跳过列表重渲染
 
@@ -106,12 +107,29 @@ let bannerSig = '';
 
 function renderBanner() {
   const p = state.pending;
-  const sig = JSON.stringify(p);
+  // 优先级：保存密码提示 > 崩溃恢复横幅（两者不会同时出现：横幅只在未恢复会话时显示）
+  const recovery = !p && state.crashRecovery;
+  const sig = JSON.stringify(p) + (recovery ? '|R' : '');
   if (sig === bannerSig) return;
   bannerSig = sig;
-  if (!p) {
+  if (!p && !recovery) {
     els.banner.style.display = 'none';
     els.banner.innerHTML = '';
+    return;
+  }
+  if (recovery) {
+    els.banner.style.display = 'flex';
+    els.banner.classList.remove('update');
+    els.banner.innerHTML = `
+      <span class="bn-icon">⚠️</span>
+      <span class="bn-text">
+        <span class="bn-title">CloudDock 上次未正常退出</span>
+        <span class="bn-sub">是否恢复上次打开的账号与标签页？（登录态不受影响）</span>
+      </span>
+      <button class="btn primary" id="bnRestore">恢复上次会话</button>
+      <button class="btn ghost" id="bnFresh">重新开始</button>`;
+    els.banner.querySelector('#bnRestore').addEventListener('click', () => window.api.resolveCrash(true));
+    els.banner.querySelector('#bnFresh').addEventListener('click', () => window.api.resolveCrash(false));
     return;
   }
   const acc = state.accounts.find((a) => a.id === p.accountId);

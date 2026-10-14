@@ -53,4 +53,20 @@ mkdir -p "$OUT"
 rm -rf "$OUT/CloudDock.app"
 cp -R "$APP" "$OUT/CloudDock.app"
 echo "打包完成: $OUT/CloudDock.app"
+
+# 更新包（Chrome 式自更新用）：zip + 清单（版本 + SHA-256）
+# 把这两个文件放到任意目录/静态服务器，应用内「帮助 ▸ 检查更新…」选 update.json 即可完成更新
+ZIP="$OUT/CloudDock-$VERSION-update.zip"
+rm -f "$ZIP"
+/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$OUT/CloudDock.app" "$ZIP"
+SHA=$(/usr/bin/shasum -a 256 "$ZIP" | awk '{print $1}')
+/usr/bin/python3 - "$ZIP" "$SHA" "$VERSION" <<'PYEOF'
+import json, os, sys
+zip_path, sha, version = sys.argv[1], sys.argv[2], sys.argv[3]
+out = os.path.dirname(zip_path)
+with open(os.path.join(out, 'update.json'), 'w') as f:
+    json.dump({'version': version, 'zip': os.path.basename(zip_path), 'sha256': sha, 'notes': ''}, f, indent=2)
+PYEOF
+echo "更新包: $ZIP"
+echo "更新清单: $OUT/update.json"
 echo "安装: cp -R $OUT/CloudDock.app ~/Applications/ && open ~/Applications/CloudDock.app"

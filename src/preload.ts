@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('api', {
   openUrl: (url: string): Promise<boolean> => ipcRenderer.invoke('nav:url', url),
   credSave: (): Promise<boolean> => ipcRenderer.invoke('cred:save'),
   credDismiss: (never: boolean): Promise<boolean> => ipcRenderer.invoke('cred:dismiss', never),
+  /** 崩溃恢复横幅的用户选择：true=恢复上次会话，false=重新开始 */
+  resolveCrash: (restore: boolean): Promise<boolean> => ipcRenderer.invoke('crash:resolve', restore),
   toggleSidebar: (collapsed?: boolean): Promise<boolean> => ipcRenderer.invoke('ui:sidebar', collapsed),
   focusUi: (): Promise<void> => ipcRenderer.invoke('ui:focus'),
   accountMenu: (id: string): Promise<void> => ipcRenderer.invoke('accounts:menu', id),

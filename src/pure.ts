@@ -115,3 +115,44 @@ export function sanitizeAccount(raw: unknown): Account | null {
     activeTabId: typeof a.activeTabId === 'string' ? a.activeTabId : null,
   };
 }
+
+/* ---------- 更新清单（Chrome 式自更新：manifest 校验 + 版本比较） ---------- */
+
+export interface UpdateManifest {
+  version: string;
+  /** zip 文件名（本地 feed = 相对 manifest 的路径；http feed = 相对 URL 或绝对 URL） */
+  zip: string;
+  sha256: string;
+  notes?: string;
+}
+
+/**
+ * 校验 update.json 的结构：version 必须是 x.y.z 形态、zip 不含路径分隔符
+ * （只允许「文件名」，路径由主进程基于 manifest 位置拼接，防止清单里塞绝对路径/穿越路径）。
+ */
+export function sanitizeUpdateManifest(raw: unknown): UpdateManifest | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const m = raw as Partial<UpdateManifest>;
+  if (typeof m.version !== 'string' || !/^\d+\.\d+\.\d+$/.test(m.version)) return null;
+  if (typeof m.zip !== 'string' || m.zip.length === 0 || m.zip.length > 200) return null;
+  if (/[/\\]/.test(m.zip)) return null;
+  if (typeof m.sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(m.sha256)) return null;
+  return {
+    version: m.version,
+    zip: m.zip,
+    sha256: m.sha256.toLowerCase(),
+    notes: typeof m.notes === 'string' ? m.notes.slice(0, 500) : undefined,
+  };
+}
+
+/** 语义化版本比较：candidate 是否比 current 新（逐段数值比较） */
+export function isNewerVersion(candidate: string, current: string): boolean {
+  const parse = (v: string): number[] => v.split('.').map((x) => /^\d+$/.test(x) ? Number(x) : 0);
+  const a = parse(candidate);
+  const b = parse(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d > 0;
+  }
+  return false;
+}

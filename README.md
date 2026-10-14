@@ -45,7 +45,26 @@
 - **账号隔离**：密码跟随「账号」，账号 B 看不到账号 A 保存的密码；删除账号时一并清除。
 - **只填同一网站**：按 origin（协议+域名+端口）精确匹配，`localhost` 与 `127.0.0.1` 视为不同网站。
 - **管理**：菜单栏「密码」→ 列出当前账号已保存的密码（点击即删除）、恢复「从不保存」的网站、清除全部。主界面不占位。
-- **安全**：密码用 AES-256-GCM 加密，随机主密钥存在登录钥匙串（条目名 `CloudDock Credential Key`，经系统自带 `/usr/bin/security` 读写），磁盘只存密文（`credentials.json`，权限 600）。不使用 Electron safeStorage，因此**不会弹钥匙串授权框**，应用更新/重新签名也不受影响。钥匙串不可用时功能自动关闭，绝不明文落盘；密码不会传给界面进程，也读不到网页内脚本。（旧版 v1.2~v1.4.0 用 safeStorage 保存的密码无法迁移，需重新保存。）
+- **安全**：密码用 AES-256-GCM 加密，随机主密钥存在登录钥匙串（条目名 `com.clouddock.credentials.v1`，经系统自带 `/usr/bin/security` 读写），磁盘只存密文（`credentials.json`，权限 600）。**加解密全部在独立的 utilityProcess 子进程内完成**——主密钥与明文永远不进主进程内存（Chrome helper 最小权限进程模型的移植）。不使用 Electron safeStorage，因此**不会弹钥匙串授权框**，应用更新/重新签名也不受影响。钥匙串/子进程不可用时密码功能整体禁用，绝不明文落盘；密码不会传给界面进程，也读不到网页内脚本。（旧版 v1.2~v1.5 用 safeStorage 保存的密码无法迁移，需重新保存；v1.5 的钥匙串条目 `CloudDock Credential Key` 会自动迁移到新条目名，密码无需重录。）
+
+## 稳定性与性能（Chrome 设计移植，v1.6.0）
+
+| 能力 | 说明 |
+|---|---|
+| 崩溃收集 | Chromium 内建 crashpad 落 minidump 到本地（不上传），启动时自动只保留最近 5 份 |
+| 崩溃恢复横幅 | 上次崩溃/强杀后启动，顶部出现内嵌横幅「恢复上次会话 / 重新开始」，登录态不受影响；正常退出仍自动恢复 |
+| 空闲预热 | 启动 15 秒后空闲时段为各账号预建隐藏渲染进程 + 预连首页（DNS+TCP+TLS，上限 4 个），侧边栏切换秒开（Chrome Aperitif 思路） |
+| 自更新 | 「帮助 ▸ 检查更新…」：校验 SHA-256 → 原子切换 → 新版本启动握手，握手超时自动回滚；磁盘始终保留上一版（`CloudDock.app.previous`） |
+
+### 更新包制作与分发
+
+```bash
+npm run package        # 除 release/CloudDock.app 外，同时产出：
+#   release/CloudDock-<版本>-update.zip   更新包
+#   release/update.json                   清单（version / zip / sha256）
+```
+
+把 `update.zip` 与 `update.json` 放到任意静态目录或 HTTP 服务器，应用内「检查更新…」首次使用时选择 `update.json`（可放目录，自动识别），此后记住更新源（`settings.json` 的 `updateFeed`，也支持直接填 URL）。下载后逐字节校验 SHA-256，不符立即中止；`ditto` 解包并剥离 quarantine 后原子替换，新版窗口就绪才放行退出，30 秒未握手自动回滚并弹窗告知。
 
 ## 数据位置（macOS）
 

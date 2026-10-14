@@ -146,3 +146,41 @@ describe('sanitizeAccount（磁盘脏数据防御）', () => {
     expect(bad?.uin).toBeUndefined();
   });
 });
+
+import { isNewerVersion, sanitizeUpdateManifest } from '../src/pure';
+
+describe('sanitizeUpdateManifest（更新清单校验）', () => {
+  const ok = { version: '1.6.0', zip: 'CloudDock-1.6.0-update.zip', sha256: 'a'.repeat(64) };
+
+  it('合法清单原样通过，sha256 归一为小写', () => {
+    const m = sanitizeUpdateManifest({ ...ok, sha256: 'A'.repeat(64), notes: 'x'.repeat(600) });
+    expect(m?.version).toBe('1.6.0');
+    expect(m?.sha256).toBe('a'.repeat(64));
+    expect(m?.notes).toHaveLength(500);
+  });
+
+  it('结构/字段不合法整体拒绝', () => {
+    expect(sanitizeUpdateManifest(null)).toBeNull();
+    expect(sanitizeUpdateManifest('x')).toBeNull();
+    expect(sanitizeUpdateManifest({ ...ok, version: 'v1.2' })).toBeNull();
+    expect(sanitizeUpdateManifest({ ...ok, version: '1.2' })).toBeNull();
+    expect(sanitizeUpdateManifest({ ...ok, sha256: 'zz' })).toBeNull();
+    expect(sanitizeUpdateManifest({ ...ok, zip: 'a/b.zip' })).toBeNull(); // 不允许路径分隔符
+    expect(sanitizeUpdateManifest({ ...ok, zip: '' })).toBeNull();
+  });
+});
+
+describe('isNewerVersion（语义化版本比较）', () => {
+  it('主/次/修订逐段比较', () => {
+    expect(isNewerVersion('1.6.0', '1.5.9')).toBe(true);
+    expect(isNewerVersion('1.5.9', '1.6.0')).toBe(false);
+    expect(isNewerVersion('2.0.0', '1.99.99')).toBe(true);
+    expect(isNewerVersion('1.5.0', '1.5.0')).toBe(false);
+    expect(isNewerVersion('1.5.0', '1.5.0')).toBe(false);
+  });
+
+  it('段数不齐时缺省按 0 补', () => {
+    expect(isNewerVersion('1.6', '1.5.9')).toBe(true);
+    expect(isNewerVersion('1.5.0.1', '1.5.0')).toBe(true);
+  });
+});

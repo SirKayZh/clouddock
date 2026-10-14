@@ -47,6 +47,22 @@ export interface AppState {
   pending: PendingSave | null;
   /** 侧边栏是否收起为窄栏 */
   sidebarCollapsed: boolean;
+  /** 上次未正常退出且用户尚未选择：渲染层显示「恢复上次会话」内嵌横幅 */
+  crashRecovery: boolean;
+}
+
+/** 密码条目元数据（不含密文/明文；镜像到主进程供菜单展示） */
+export interface CredMeta {
+  id: string;
+  accountId: string;
+  origin: string;
+  label: string;
+  updatedAt: number;
+}
+
+export interface NeverSave {
+  accountId: string;
+  origin: string;
 }
 
 /** 页面注入脚本向主进程上报的登录表单内容 */
