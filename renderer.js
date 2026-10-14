@@ -201,7 +201,7 @@ function startRename(item, acc) {
   input.addEventListener('blur', () => done(true));
 }
 
-/** 添加账号：不再手动输入，直接新建独立会话并打开腾讯云网页登录页，登录后自动用 UIN 命名 */
+/** 添加账号：无需输入，新建独立会话并打开起始页；登录任意网站后自动按用户名/站点命名 */
 async function addAccount() {
   await window.api.add();
 }

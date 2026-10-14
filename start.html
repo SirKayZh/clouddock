@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>新标签页</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+      background: #F5F7FA; color: #1D2129;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .wrap { width: min(640px, 88vw); text-align: center; }
+    h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+    .sub { font-size: 13px; color: #86909C; margin: 0 0 22px; line-height: 1.7; }
+    form { display: flex; gap: 8px; margin-bottom: 26px; }
+    input {
+      flex: 1; height: 42px; padding: 0 14px; font-size: 14px;
+      border: 1px solid #DCDFE6; border-radius: 8px; outline: none; background: #fff;
+    }
+    input:focus { border-color: #0052D9; box-shadow: 0 0 0 3px rgba(0, 82, 217, .12); }
+    button.go {
+      height: 42px; padding: 0 20px; border: 0; border-radius: 8px;
+      background: #0052D9; color: #fff; font-size: 14px; cursor: pointer;
+    }
+    button.go:hover { background: #003CAB; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .site {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      padding: 14px 6px; background: #fff; border: 1px solid #E5E6EB; border-radius: 10px;
+      cursor: pointer; font-size: 13px; color: #1D2129; text-decoration: none;
+      transition: border-color .15s, box-shadow .15s, transform .15s;
+    }
+    .site:hover { border-color: #0052D9; box-shadow: 0 2px 10px rgba(0, 82, 217, .12); transform: translateY(-1px); }
+    .ico {
+      width: 36px; height: 36px; border-radius: 9px; color: #fff;
+      display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 16px;
+    }
+    .tip { margin-top: 22px; font-size: 12px; color: #A9AEB8; line-height: 1.8; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>想登录哪个网站？</h1>
+    <p class="sub">这个标签页属于独立的账号会话：在这里登录的网站，<br>不会影响侧边栏里其它账号。</p>
+    <form id="f">
+      <input id="q" placeholder="输入网址或搜索内容，回车打开" autofocus spellcheck="false" autocomplete="off">
+      <button class="go" type="submit">打开</button>
+    </form>
+    <div class="grid" id="grid"></div>
+    <div class="tip">登录成功后，账号会自动按用户名 / 站点命名；<br>同一个网站可以在不同账号里分别登录不同的用户。</div>
+  </div>
+  <script>
+    'use strict';
+    var SITES = [
+      ['腾讯云', 'https://cloud.tencent.com/login?s_url=https%3A%2F%2Fconsole.cloud.tencent.com%2F', '#0052D9'],
+      ['阿里云', 'https://account.aliyun.com/login/login.htm', '#ED7B2F'],
+      ['AWS', 'https://console.aws.amazon.com/', '#B58A00'],
+      ['Azure', 'https://portal.azure.com/', '#029BE5'],
+      ['GitHub', 'https://github.com/login', '#24292F'],
+      ['Google', 'https://accounts.google.com/', '#E3737B'],
+      ['Microsoft', 'https://login.microsoftonline.com/', '#7B61FF'],
+      ['Notion', 'https://www.notion.so/login', '#2E7D32']
+    ];
+    var grid = document.getElementById('grid');
+    SITES.forEach(function (s) {
+      var a = document.createElement('a');
+      a.className = 'site';
+      a.href = s[1];
+      var ico = document.createElement('span');
+      ico.className = 'ico';
+      ico.style.background = s[2];
+      ico.textContent = s[0].slice(0, 1).toUpperCase();
+      var name = document.createElement('span');
+      name.textContent = s[0];
+      a.appendChild(ico);
+      a.appendChild(name);
+      grid.appendChild(a);
+    });
+
+    function resolve(text) {
+      text = text.trim();
+      if (!text) return null;
+      if (/^https?:\/\//i.test(text)) return text;
+      if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?([\/?#].*)?$/i.test(text)) return 'http://' + text;
+      if (!/\s/.test(text) && /^[^\s\/]+\.[a-z]{2,}(:\d+)?([\/?#].*)?$/i.test(text)) return 'https://' + text;
+      return 'https://www.bing.com/search?q=' + encodeURIComponent(text);
+    }
+    document.getElementById('f').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var url = resolve(document.getElementById('q').value);
+      if (url) location.href = url;
+    });
+  </script>
+</body>
+</html>

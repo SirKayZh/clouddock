@@ -18,7 +18,7 @@ npm run build
 echo "==> 准备干净构建目录: $STAGE/src"
 SRCDIR="$STAGE/src"
 mkdir -p "$SRCDIR"
-cp package.json package-lock.json tsconfig.json index.html renderer.js README.md "$SRCDIR/"
+cp package.json package-lock.json tsconfig.json index.html start.html renderer.js README.md "$SRCDIR/"
 cp -R src dist "$SRCDIR/"
 (cd "$SRCDIR" && npm install --no-audit --no-fund)
 # electron 二进制 postinstall 可能静默失败，兜底手动补装
@@ -35,7 +35,7 @@ echo "==> 组装 .app"
 /usr/bin/python3 -c "import os; os.unlink('$ELECTRON_APP/Contents/Resources/default_app.asar')"
 cp -R "$ELECTRON_APP" "$APP"
 mkdir -p "$APP/Contents/Resources/app"
-cp -R package.json dist index.html renderer.js README.md "$APP/Contents/Resources/app/"
+cp -R package.json dist index.html start.html renderer.js README.md "$APP/Contents/Resources/app/"
 # App 图标（assets/gen_icon.py 生成）
 cp assets/clouddock.icns "$APP/Contents/Resources/clouddock.icns"
 plutil -replace CFBundleName -string "CloudDock" "$APP/Contents/Info.plist"

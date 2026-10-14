@@ -13,13 +13,81 @@ import type { Rectangle, WebContents, Session, MenuItemConstructorOptions } from
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import type { Account, AppState, CapturedLogin, FillPayload, PendingSave, Tab } from './types';
 
-const HOME_URL = 'https://console.cloud.tencent.com/';
-/** 新账号首个标签直达腾讯云网页登录页（登录后跳回控制台） */
-const LOGIN_URL = 'https://cloud.tencent.com/login?s_url=https%3A%2F%2Fconsole.cloud.tencent.com%2F';
-/** 新账号在识别到 UIN 之前的占位备注 */
+/*
+ * 通用多账号浏览器：账号 = 一个独立会话容器，可登录任意网站。
+ * Tab.url 为空字符串 = 内置「起始页」(start.html)：输入网址或点常用站点即可开始。
+ */
+function startUrl(): string {
+  return pathToFileURL(path.join(__dirname, '..', 'start.html')).href;
+}
+function isStartUrl(u: string): boolean {
+  return u.startsWith(startUrl().split('?')[0]);
+}
+/** 新账号在识别到登录身份之前的占位备注 */
 const PENDING_NOTE = '登录后自动识别账号';
+
+/** 常见站点的友好名称（后缀匹配），其余取注册域名 */
+const SITE_NAMES: Array<[string, string]> = [
+  ['tencentcloud.com', '腾讯云'],
+  ['qcloud.com', '腾讯云'],
+  ['tencent.com', '腾讯云'],
+  ['aliyun.com', '阿里云'],
+  ['amazonaws.com', 'AWS'],
+  ['aws.amazon.com', 'AWS'],
+  ['azure.com', 'Azure'],
+  ['microsoftonline.com', 'Microsoft'],
+  ['github.com', 'GitHub'],
+  ['google.com', 'Google'],
+];
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+/** 取注册域（粗略处理 com.cn / co.uk 一类二级后缀） */
+function registrableDomain(host: string): string {
+  if (/^\d+(\.\d+){3}$/.test(host) || !host.includes('.')) return host;
+  const parts = host.split('.');
+  const sld = new Set(['com', 'co', 'net', 'org', 'gov', 'edu']);
+  const n = parts.length >= 3 && sld.has(parts[parts.length - 2]) && parts[parts.length - 1].length === 2 ? 3 : 2;
+  return parts.slice(-n).join('.');
+}
+
+function siteLabel(url: string): string {
+  const host = hostnameOf(url);
+  if (!host) return '';
+  const hit = SITE_NAMES.find(([suffix]) => host === suffix || host.endsWith(`.${suffix}`));
+  return hit ? hit[1] : registrableDomain(host);
+}
+
+/** 账号「首页」：腾讯云直达控制台，其它站点取站点根 */
+function homeFor(url: string): string {
+  const host = hostnameOf(url);
+  if (host === 'tencentcloud.com' || host.endsWith('.tencentcloud.com')) return 'https://console.tencentcloud.com/';
+  if (/(^|\.)(tencent|qcloud)\.com$/.test(host)) return 'https://console.cloud.tencent.com/';
+  try {
+    return `${new URL(url).origin}/`;
+  } catch {
+    return url;
+  }
+}
+
+/** 把用户在地址栏输入的内容解析为 URL：网址 / localhost / IP 直接打开，其余当作搜索词 */
+function resolveInput(raw: string): string | null {
+  const text = raw.trim();
+  if (!text) return null;
+  if (/^https?:\/\//i.test(text)) return text;
+  if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?([/?#].*)?$/i.test(text)) return `http://${text}`;
+  if (!/\s/.test(text) && /^[^\s/]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(text)) return `https://${text}`;
+  return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
+}
 const SIDEBAR_W = 232;
 const TOPBAR_H = 52;
 const TABBAR_H = 36;
@@ -99,7 +167,7 @@ function sanitizeAccount(raw: unknown): Account | null {
       seen.add(tt.id);
       tabs.push({
         id: tt.id,
-        url: isHttpUrl(tt.url) ? tt.url : HOME_URL,
+        url: isHttpUrl(tt.url) ? tt.url : '',
         title: typeof tt.title === 'string' ? tt.title : '',
       });
     }
@@ -111,6 +179,14 @@ function sanitizeAccount(raw: unknown): Account | null {
     color: typeof a.color === 'string' && /^#[0-9a-f]{6}$/i.test(a.color) ? a.color : PALETTE[0],
     createdAt: typeof a.createdAt === 'number' ? a.createdAt : Date.now(),
     autoName: a.autoName === true,
+    // 升级兼容：旧版已按 UIN 自动命名的账号标记为 uin 来源，避免被站点域名覆盖
+    nameSource:
+      a.nameSource === 'host' || a.nameSource === 'login' || a.nameSource === 'uin'
+        ? a.nameSource
+        : a.autoName === true && typeof a.uin === 'string'
+          ? 'uin'
+          : undefined,
+    home: isHttpUrl(a.home) ? a.home : undefined,
     uin: typeof a.uin === 'string' && /^\d{4,20}$/.test(a.uin) ? a.uin : undefined,
     ownerUin: typeof a.ownerUin === 'string' && /^\d{4,20}$/.test(a.ownerUin) ? a.ownerUin : undefined,
     tabs,
@@ -294,6 +370,8 @@ interface RawPending {
   armed: boolean;
 }
 let pending: RawPending | null = null;
+/** 最近一次登录表单提交的用户名：登录页跳转后用于给账号自动命名 */
+let loginHint: { accountId: string; tabId: string; label: string; host: string; ts: number } | null = null;
 /** 登录成功的跳转通常在提交后数秒内发生；超时视为登录失败/用户已离开 */
 const PENDING_TTL = 15_000;
 
@@ -308,11 +386,16 @@ function onCaptured(wcId: number, frameUrl: string | undefined, raw: unknown): v
   const ctx = wcMap.get(wcId);
   if (!ctx || !accounts.includes(ctx.acc)) return;
   const origin = credOrigin(frameUrl);
-  if (!origin || !credAvailable() || isNever(ctx.acc.id, origin)) return;
+  if (!origin) return;
   const r = raw as Partial<CapturedLogin> | null;
   if (!r || !Array.isArray(r.fields) || typeof r.password !== 'string') return;
   const fields = r.fields.filter((f): f is string => typeof f === 'string').map((f) => f.slice(0, 200));
   if (fields.length === 0 || fields.length > 5 || !r.password || r.password.length > 256) return;
+
+  // 用提交的用户名给账号自动命名（与是否保存密码无关；真正登录成功要等页面跳转，见 armPending）
+  loginHint = { accountId: ctx.acc.id, tabId: ctx.tab.id, label: credLabel(fields), host: hostOf(origin), ts: Date.now() };
+
+  if (!credAvailable() || isNever(ctx.acc.id, origin)) return;
 
   // 同一用户名已有记录？密码也相同 → 不打扰；密码不同 → 提示「更新」
   let existingId: string | null = null;
@@ -342,6 +425,14 @@ function onCaptured(wcId: number, frameUrl: string | undefined, raw: unknown): v
 
 /** 登录页发生导航 = 很可能登录成功，此时再弹提示（输错密码的页面通常不会跳转） */
 function armPending(tabId: string): void {
+  if (loginHint && loginHint.tabId === tabId) {
+    const h = loginHint;
+    loginHint = null;
+    const acc = accounts.find((a) => a.id === h.accountId);
+    if (acc && Date.now() - h.ts <= PENDING_TTL && h.label) {
+      applyAutoName(acc, 'login', h.label, registrableDomain(h.host.replace(/:\d+$/, '')));
+    }
+  }
   if (!pending || pending.armed || pending.tabId !== tabId) return;
   if (Date.now() - pending.ts > PENDING_TTL) {
     pending = null;
@@ -355,6 +446,7 @@ function armPending(tabId: string): void {
 /** 用户主动导航（地址栏/后退/刷新/首页）不应被当作「登录成功跳转」，丢弃尚未确认的捕获 */
 function dropUnarmedPending(): void {
   if (pending && !pending.armed) pending = null;
+  loginHint = null;
 }
 
 function clearPending(): void {
@@ -423,7 +515,7 @@ async function clearAccountCreds(accountId: string): Promise<void> {
 
 /* ---------- 账号 / 标签页模型 ---------- */
 
-function newTabRecord(url = HOME_URL, title = ''): Tab {
+function newTabRecord(url = '', title = ''): Tab {
   return { id: randomBytes(6).toString('hex'), url, title };
 }
 
@@ -458,11 +550,56 @@ function findAccountByTab(tabId: string): { acc: Account; tab: Tab } | null {
   return null;
 }
 
-/* ---------- 登录后自动识别账号（读腾讯云登录 Cookie 中的 UIN） ---------- */
+/* ---------- 账号自动命名 ---------- */
 /*
- * 腾讯云通过网页登录（扫码/邮箱/子账号等），用户无需在本应用里输入任何账号信息。
- * 登录成功后，腾讯云会在 .cloud.tencent.com 等域写入 uin（当前操作者）与 ownerUin（主账号）Cookie，
- * 这里读取其数字部分，自动作为侧边栏账号名；用户手动重命名后不再覆盖。
+ * 账号名无需手填，按优先级自动识别（用户手动重命名后不再覆盖）：
+ *   uin   腾讯云：读登录 Cookie 中的 uin / ownerUin（最准）
+ *   login 任意网站：登录表单提交的用户名，页面跳转后视为登录成功
+ *   host  兜底：首次打开的站点名称
+ */
+
+const NAME_RANK = { host: 1, login: 2, uin: 3 } as const;
+
+function applyAutoName(acc: Account, source: keyof typeof NAME_RANK, name: string, note: string): void {
+  if (!acc.autoName || !accounts.includes(acc)) return;
+  const cur = acc.nameSource ? NAME_RANK[acc.nameSource] : 0;
+  if (NAME_RANK[source] < cur) return;
+  if (source === 'host' && acc.nameSource) return; // 站点名只在首次设置
+  let finalName = name.slice(0, 30);
+  if (source === 'host') {
+    // 多个账号同站点时加序号，便于区分
+    let n = 1;
+    let candidate = finalName;
+    while (accounts.some((a) => a !== acc && a.name === candidate)) {
+      n += 1;
+      candidate = `${finalName} ${n}`;
+    }
+    finalName = candidate;
+  }
+  const finalNote = note.slice(0, 60);
+  if (acc.nameSource === source && acc.name === finalName && acc.note === finalNote) return;
+  acc.name = finalName;
+  acc.note = finalNote;
+  acc.nameSource = source;
+  scheduleSave();
+  sendState();
+}
+
+/** 主窗口首次导航到真实网站：记录账号首页，并用站点名兜底命名 */
+function onMainNavigated(acc: Account, url: string): void {
+  if (!isHttpUrl(url) || !accounts.includes(acc)) return;
+  if (!acc.home) {
+    acc.home = homeFor(url);
+    scheduleSave();
+  }
+  const label = siteLabel(url);
+  if (label && acc.autoName && !acc.nameSource) applyAutoName(acc, 'host', label, PENDING_NOTE);
+}
+
+/* ----- 腾讯云：读登录 Cookie 中的 UIN ----- */
+/*
+ * 腾讯云登录成功后，会在 .cloud.tencent.com 等域写入 uin（当前操作者）与 ownerUin（主账号）Cookie，
+ * 这里读取其数字部分作为账号名；仅对腾讯云相关域生效，不影响其它网站。
  */
 
 const UIN_COOKIE_DOMAINS = ['tencent.com', 'tencentcloud.com', 'qcloud.com'];
@@ -493,15 +630,13 @@ async function detectAccountIdentity(accountId: string): Promise<void> {
     const uin = await readUinCookie(ses, 'uin');
     if (!uin) return; // 未登录/已退出：保持现状
     const owner = (await readUinCookie(ses, 'ownerUin')) || uin;
-    if (!accounts.includes(acc) || (acc.uin === uin && acc.ownerUin === owner)) return;
-    acc.uin = uin;
-    acc.ownerUin = owner;
-    if (acc.autoName) {
-      acc.name = uin;
-      acc.note = uin === owner ? '' : `子账号 · 主账号 ${owner}`;
+    if (!accounts.includes(acc)) return;
+    if (acc.uin !== uin || acc.ownerUin !== owner) {
+      acc.uin = uin;
+      acc.ownerUin = owner;
+      scheduleSave();
     }
-    scheduleSave();
-    sendState();
+    applyAutoName(acc, 'uin', uin, uin === owner ? '腾讯云' : `腾讯云子账号 · 主账号 ${owner}`);
   } catch (err) {
     console.error('[clouddock] detect identity failed:', err);
   }
@@ -573,7 +708,7 @@ function sendState(): void {
     accounts,
     activeId,
     activeTabId: tab?.id ?? null,
-    url: wc ? wc.getURL() : tab?.url ?? '',
+    url: wc ? (isHttpUrl(wc.getURL()) ? wc.getURL() : '') : tab?.url ?? '',
     title: wc ? wc.getTitle() : tab?.title ?? '',
     canGoBack: wc ? wc.navigationHistory.canGoBack() : false,
     canGoForward: wc ? wc.navigationHistory.canGoForward() : false,
@@ -657,14 +792,20 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
     // 兜底：页面加载完成后再识别一次（覆盖升级前已登录、Cookie 事件早于监听等情况）
     void detectAccountIdentity(acc.id);
   });
+  const syncUrl = (): void => {
+    const u = wc.getURL();
+    if (isHttpUrl(u)) tab.url = u;
+    else if (isStartUrl(u)) tab.url = ''; // 起始页不记录文件路径
+  };
   wc.on('did-navigate', () => {
-    tab.url = wc.getURL();
+    syncUrl();
+    onMainNavigated(acc, wc.getURL());
     armPending(tab.id);
     scheduleSave();
     refresh();
   });
   wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => {
-    tab.url = wc.getURL();
+    syncUrl();
     if (isMainFrame) armPending(tab.id);
     scheduleSave();
     refresh();
@@ -683,7 +824,7 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
     view.setBounds(viewBounds());
     view.setVisible(false);
   }
-  safeLoad(wc, isHttpUrl(tab.url) ? tab.url : HOME_URL);
+  safeLoad(wc, isHttpUrl(tab.url) ? tab.url : startUrl());
   return view;
 }
 
@@ -705,6 +846,7 @@ function destroyTabView(tabId: string): void {
   views.delete(tabId);
   wcMap.delete(view.webContents.id);
   if (pending && !pending.armed && pending.tabId === tabId) pending = null;
+  if (loginHint?.tabId === tabId) loginHint = null;
   view.webContents.close();
 }
 
@@ -743,7 +885,7 @@ function switchAccount(id: string): boolean {
 
 function newTabForAccount(acc: Account, url?: string, activate = true): Tab {
   ensureAccountTabs(acc);
-  const t = newTabRecord(url && /^https?:/i.test(url) ? url : HOME_URL);
+  const t = newTabRecord(url && /^https?:/i.test(url) ? url : '');
   acc.tabs.push(t);
   if (activate) {
     acc.activeTabId = t.id;
@@ -843,9 +985,9 @@ function registerIpc(): void {
   ipcMain.handle('accounts:list', () => accounts);
 
   ipcMain.handle('accounts:add', (_e, name: unknown, note: unknown): Account => {
-    // 不再手动输入：不传名称时直接开登录页，登录后按 UIN 自动命名
+    // 无需手动输入：新建独立会话并打开起始页，选站点登录后自动命名
     const manualName = String(name ?? '').trim().slice(0, 30);
-    const loginTab = newTabRecord(LOGIN_URL);
+    const loginTab = newTabRecord('');
     let seq = 1;
     while (accounts.some((a) => a.name === `新账号 ${seq}`)) seq += 1;
     const acc: Account = {
@@ -983,7 +1125,7 @@ function registerIpc(): void {
         wc.stop();
         break;
       case 'home':
-        safeLoad(wc, HOME_URL);
+        safeLoad(wc, activeAccount()?.home ?? startUrl());
         break;
       default:
         break;
@@ -994,9 +1136,8 @@ function registerIpc(): void {
     const wc = activeWc();
     if (!wc) return false;
     dropUnarmedPending();
-    let url = String(raw ?? '').trim();
+    const url = resolveInput(String(raw ?? ''));
     if (!url) return false;
-    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
     try {
       const u = new URL(url);
       if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;

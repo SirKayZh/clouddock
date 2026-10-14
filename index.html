@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self'">
-  <title>CloudDock — 腾讯云多账号工作台</title>
+  <title>CloudDock — 多账号浏览器</title>
   <style>
     :root {
       --blue: #0052D9;
@@ -198,7 +198,7 @@
   <div id="app">
     <aside id="sidebar">
       <div class="sb-header">
-        <div class="sb-title">☁️ CloudDock<span>腾讯云多账号工作台</span></div>
+        <div class="sb-title">☁️ CloudDock<span>多账号浏览器</span></div>
       </div>
       <div id="accountList" class="sb-list"></div>
       <div id="sbFooter" class="sb-footer">
@@ -211,8 +211,8 @@
         <button id="navBack" class="tb-btn" title="后退 (⌘[)">‹</button>
         <button id="navFwd" class="tb-btn" title="前进 (⌘])">›</button>
         <button id="navReload" class="tb-btn" title="刷新 (⌘R)">⟳</button>
-        <button id="navHome" class="tb-btn" title="控制台首页">⌂</button>
-        <input id="urlInput" placeholder="https://console.cloud.tencent.com/" spellcheck="false">
+        <button id="navHome" class="tb-btn" title="账号首页">⌂</button>
+        <input id="urlInput" placeholder="输入网址或搜索内容" spellcheck="false">
         <div id="activeBadge"></div>
       </div>
       <div id="tabbar" style="display:none">
@@ -224,10 +224,10 @@
         <div id="empty">
           <div class="empty-card">
             <div class="empty-icon">☁️</div>
-            <h1>腾讯云多账号工作台</h1>
+            <h1>多账号浏览器</h1>
             <p>每个账号拥有完全独立的浏览器会话（Cookie / 缓存隔离），<br>
-               点「添加账号」会直接打开腾讯云网页登录页，登录后自动识别账号，<br>
-               之后点击侧边栏秒级切换，无需退出再重新登录。</p>
+               点「添加账号」会新建一个独立会话，在里面登录任意网站（腾讯云、GitHub、阿里云……），<br>
+               登录后自动命名，之后点击侧边栏秒级切换，无需退出再重新登录。</p>
             <button id="btnAddEmpty" class="btn primary">＋ 添加第一个账号</button>
           </div>
         </div>

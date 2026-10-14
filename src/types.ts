@@ -10,9 +10,13 @@ export interface Account {
   note: string;
   color: string;
   createdAt: number;
-  /** true = 名称由登录后的腾讯云 UIN 自动识别（用户手动重命名后置 false，不再覆盖） */
+  /** true = 名称由登录结果自动识别（用户手动重命名后置 false，不再覆盖） */
   autoName?: boolean;
-  /** 当前登录的操作者 UIN（子账号登录时与 ownerUin 不同） */
+  /** 自动名称的来源，优先级 uin > login > host：host=站点域名，login=登录页输入的用户名，uin=腾讯云 UIN */
+  nameSource?: 'host' | 'login' | 'uin';
+  /** 该账号的「首页」：首次打开的站点（⌂ 按钮回到这里；为空则回到起始页） */
+  home?: string;
+  /** （腾讯云站点专属）当前登录的操作者 UIN（子账号登录时与 ownerUin 不同） */
   uin?: string;
   /** 主账号 UIN */
   ownerUin?: string;
