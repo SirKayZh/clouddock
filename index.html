@@ -12,6 +12,11 @@
       --line: #E3E8F0;
       --text: #1C2438;
       --sub: #8A94A8;
+      /* 企业微信风格：浅蓝侧栏 + 白色选中块 + 圆角方形头像 */
+      --rail: #D6E6F8;
+      --rail-line: #C4D9F0;
+      --rail-hover: rgba(255, 255, 255, .5);
+      --rail-sel: #FFFFFF;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; }
@@ -23,8 +28,8 @@
 
     /* ---------- 侧边栏 ---------- */
     #sidebar {
-      width: 232px; flex: none; background: #fff;
-      border-right: 1px solid var(--line);
+      width: 232px; flex: none; background: var(--rail);
+      border-right: 1px solid var(--rail-line);
       display: flex; flex-direction: column;
     }
     .sb-header {
@@ -35,23 +40,24 @@
     .sb-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .sb-logo { width: 26px; height: 26px; flex: none; display: block; }
     .sb-title { font-size: 14px; font-weight: 700; line-height: 1.2; white-space: nowrap; letter-spacing: .2px; }
-    .sb-title span { display: block; font-size: 10px; font-weight: 400; color: var(--sub); letter-spacing: 0; }
+    .sb-title span { display: block; font-size: 10px; font-weight: 400; color: #6A82A3; letter-spacing: 0; }
     .sb-list { flex: 1; overflow-y: auto; padding: 6px; }
-    .sb-footer { flex: none; padding: 10px; border-top: 1px solid var(--line); }
+    .sb-footer { flex: none; padding: 10px; border-top: 1px solid var(--rail-line); }
 
     .acc-item {
-      display: flex; align-items: center; gap: 8px;
-      height: 46px; padding: 0 8px; border-radius: 8px;
+      display: flex; align-items: center; gap: 10px;
+      height: 56px; padding: 0 10px; border-radius: 10px;
       cursor: pointer; user-select: none; position: relative;
     }
-    .acc-item:hover { background: #F2F5FB; }
-    .acc-item.active { background: var(--blue-light); }
+    .acc-item:hover { background: var(--rail-hover); }
+    .acc-item.active { background: var(--rail-sel); box-shadow: 0 1px 3px rgba(40, 90, 160, .12); }
     .acc-item.active .acc-name { color: var(--blue); }
     .acc-avatar {
-      width: 26px; height: 26px; border-radius: 50%; flex: none;
+      width: 38px; height: 38px; border-radius: 10px; flex: none;
       display: flex; align-items: center; justify-content: center;
-      color: #fff; font-size: 12px; font-weight: 700;
+      color: #fff; font-size: 16px; font-weight: 700;
     }
+    .acc-label { display: none; }
     .acc-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
     .acc-name {
       font-size: 13px; font-weight: 600; white-space: nowrap;
@@ -62,7 +68,7 @@
       overflow: hidden; text-overflow: ellipsis;
     }
     .acc-hint {
-      flex: none; font-size: 10px; color: #A6B0C3; background: #F2F5FB;
+      flex: none; font-size: 10px; color: #7E93B0; background: rgba(255, 255, 255, .65);
       border-radius: 4px; padding: 1px 5px;
     }
     .acc-del {
@@ -82,7 +88,7 @@
       display: none; flex: none; font-size: 13px; line-height: 1; color: #98A2B8;
       padding: 3px 5px; border-radius: 4px; letter-spacing: 1px;
     }
-    .acc-more:hover { color: var(--blue); background: #E3ECFB; }
+    .acc-more:hover { color: var(--blue); background: #E6EFFB; }
     .acc-item:hover .acc-more { display: inline; }
     .add-mini { display: none; }
 
@@ -98,17 +104,26 @@
     body.collapsed .sb-tip,
     body.collapsed .add-full { display: none !important; }
     body.collapsed .add-mini { display: inline; font-size: 16px; }
-    body.collapsed .acc-item { justify-content: center; padding: 0; }
+    /* 窄栏：圆角方形头像居中，名字缩小显示在下方（企业微信一样） */
+    body.collapsed .acc-item {
+      flex-direction: column; justify-content: center; gap: 4px;
+      height: auto; padding: 8px 0 6px; margin: 2px 8px;
+    }
+    body.collapsed .acc-avatar { width: 44px; height: 44px; font-size: 18px; }
+    body.collapsed .acc-label {
+      display: block; max-width: 100%; padding: 0 4px; font-size: 11px; color: #4A5D7A;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+    }
+    body.collapsed .acc-item.active .acc-label { color: var(--blue); font-weight: 600; }
     body.collapsed .sb-list { padding: 6px 0; }
-    body.collapsed .acc-item { margin: 0 10px; }
     body.collapsed .sb-footer { padding: 10px; }
 
     .add-btn {
-      width: 100%; height: 34px; border: 1px dashed var(--blue);
-      border-radius: 8px; background: transparent; color: var(--blue);
-      font-size: 13px; cursor: pointer;
+      width: 100%; height: 36px; border: none;
+      border-radius: 10px; background: rgba(255, 255, 255, .7); color: var(--blue);
+      font-size: 13px; font-weight: 600; cursor: pointer;
     }
-    .add-btn:hover { background: var(--blue-light); }
+    .add-btn:hover { background: #fff; }
     .add-form { display: flex; flex-direction: column; gap: 8px; }
     .add-input {
       height: 32px; border: 1px solid var(--line); border-radius: 8px;
@@ -123,7 +138,7 @@
     .btn:hover { border-color: var(--blue); color: var(--blue); }
     .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
     .btn.primary:hover { background: #0665E8; }
-    .sb-tip { margin-top: 8px; text-align: center; font-size: 10px; color: #A6B0C3; }
+    .sb-tip { margin-top: 8px; text-align: center; font-size: 10px; color: #7E93B0; }
 
     /* ---------- 主区域 ---------- */
     #main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }

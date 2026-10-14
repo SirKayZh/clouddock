@@ -162,6 +162,7 @@ function renderList() {
     const hint = i < 9 ? `<span class="acc-hint">⌘${i + 1}</span>` : '';
     item.innerHTML = `
       <span class="acc-avatar" title="${escapeHtml(acc.name)}" style="background:${acc.color}">${escapeHtml(acc.name.slice(0, 1).toUpperCase())}</span>
+      <span class="acc-label">${escapeHtml(acc.name)}</span>
       <span class="acc-info">
         <span class="acc-name" title="双击重命名">${escapeHtml(acc.name)}</span>
         ${acc.note ? `<span class="acc-note">${escapeHtml(acc.note)}</span>` : ''}
