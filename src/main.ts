@@ -470,8 +470,8 @@ function armPending(tabId: string): void {
 }
 
 /** 页面还在输入（登录页 input 事件）：顺延等待窗口，覆盖滑块/短信二次验证这类耗时流程 */
-function keepPendingAlive(tabId: number): void {
-  const p = findUnarmedByTab(String(tabId));
+function keepPendingAlive(tabId: string): void {
+  const p = findUnarmedByTab(tabId);
   if (p) p.ts = Date.now();
 }
 
@@ -479,8 +479,8 @@ function keepPendingAlive(tabId: number): void {
  * 点了登录但密码框已经消失、页面却没跳转（密码错误、风控拦截）：
  * 丢弃这次捕获，用户改对密码再登录时会重新上报，届时照常提示。
  */
-function abandonPending(tabId: number): void {
-  const p = findUnarmedByTab(String(tabId));
+function abandonPending(tabId: string): void {
+  const p = findUnarmedByTab(tabId);
   if (p) pendings.delete(p.accountId);
 }
 
@@ -1287,15 +1287,19 @@ function registerIpc(): void {
     onCaptured(e.sender.id, e.senderFrame?.url, raw);
   });
 
-  // 登录过程中的心跳（页面仍在输入）与「表单已消失」
+  // 登录过程中的心跳（页面仍在输入）与「表单已消失」。
+  // 注意：e.sender.id 是 webContents id，pending 记的是 tab 记录 id，必须经 wcMap 换算，
+  // 直接拿数字 id 去比对 hex tab id 永远不匹配（曾导致心跳/放弃检测空转，慢登录超时丢提示）。
   ipcMain.on('cred:active', (e) => {
     if (!credOrigin(e.sender.getURL())) return;
-    keepPendingAlive(e.sender.id);
+    const ctx = wcMap.get(e.sender.id);
+    if (ctx) keepPendingAlive(ctx.tab.id);
   });
 
   ipcMain.on('cred:form-gone', (e) => {
     if (!credOrigin(e.sender.getURL())) return;
-    abandonPending(e.sender.id);
+    const ctx = wcMap.get(e.sender.id);
+    if (ctx) abandonPending(ctx.tab.id);
   });
 
   // 起始页的地址输入：由主进程统一解析（与地址栏 nav:url 同一套 resolveInput），start.html 不再留一份拷贝。
