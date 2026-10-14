@@ -90,7 +90,7 @@ function resolveInput(raw: string): string | null {
 }
 const SIDEBAR_W = 232;
 /** 收起后的窄栏宽度（只显示头像，须容纳 macOS 红绿灯；与 index.html body.collapsed 一致） */
-const RAIL_W = 72;
+const RAIL_W = 88;
 let sidebarCollapsed = false;
 function sidebarW(): number {
   return sidebarCollapsed ? RAIL_W : SIDEBAR_W;
