@@ -704,6 +704,42 @@ function watchAccountIdentity(acc: Account, ses: Session): void {
   });
 }
 
+/* ---------- 会话 Cookie 持久化 ---------- */
+
+/**
+ * 腾讯云等站点的登录 Cookie 是「会话 Cookie」（不落盘），应用一退出登录态就清零，
+ * 每次重启/升级都要全部重新扫码/输密码。Electron 没有 Chromium 的
+ * persist-session-cookies 开关，这里在应用层把账号分区里新增的会话 Cookie
+ * 改写为带过期时间的持久 Cookie（默认 30 天），重启后登录态保留：
+ * - 网站主动删除（removed=true）不拦截，登出行为不受影响；
+ * - 改写后的持久 Cookie 再触发 changed 时 session=false，不会进入循环。
+ */
+const SESSION_COOKIE_TTL_SEC = 30 * 24 * 3600;
+const cookiePersistedSessions = new Set<string>();
+
+function persistSessionCookies(acc: Account, ses: Session): void {
+  if (cookiePersistedSessions.has(acc.id)) return;
+  cookiePersistedSessions.add(acc.id);
+  ses.cookies.on('changed', (_e, cookie, _cause, removed) => {
+    if (removed || !cookie.session || !cookie.domain) return;
+    const host = cookie.domain.replace(/^\./, '');
+    const detail: Electron.CookiesSetDetails = {
+      url: `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path}`,
+      name: cookie.name,
+      value: cookie.value,
+      path: cookie.path,
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly,
+      sameSite: cookie.sameSite,
+      expirationDate: Math.floor(Date.now() / 1000) + SESSION_COOKIE_TTL_SEC,
+      ...(cookie.hostOnly ? {} : { domain: cookie.domain }),
+    };
+    ses.cookies.set(detail).catch(() => {
+      /* 个别 cookie（非法 sameSite 等）改写失败：保持会话语义，不影响页面 */
+    });
+  });
+}
+
 /* ---------- 权限策略（session 级） ---------- */
 
 function applyPermissionPolicy(ses: Session): void {
@@ -790,6 +826,7 @@ function createTabView(acc: Account, tab: Tab): WebContentsView {
   ses.setUserAgent(ua);
   applyPermissionPolicy(ses);
   watchAccountIdentity(acc, ses);
+  persistSessionCookies(acc, ses);
 
   const view = new WebContentsView({
     webPreferences: {
@@ -1187,6 +1224,7 @@ async function removeAccount(id: string): Promise<boolean> {
   watchedSessions.delete(id);
   clearTimeout(identityTimers.get(id));
   identityTimers.delete(id);
+  cookiePersistedSessions.delete(id);
 
   // 先切走并刷新 UI，再清理数据：清理可能耗时，避免界面卡在已删除账号上
   if (activeId === id) {
