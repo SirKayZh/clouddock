@@ -60,13 +60,27 @@ ZIP="$OUT/CloudDock-$VERSION-update.zip"
 rm -f "$ZIP"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$OUT/CloudDock.app" "$ZIP"
 SHA=$(/usr/bin/shasum -a 256 "$ZIP" | awk '{print $1}')
-/usr/bin/python3 - "$ZIP" "$SHA" "$VERSION" <<'PYEOF'
+
+# DMG（GitHub 分发用）：拖入 Applications 的标准安装布局
+DMG="$OUT/CloudDock-$VERSION.dmg"
+rm -f "$DMG"
+DMG_STAGE="$STAGE/dmg-root"
+mkdir -p "$DMG_STAGE"
+cp -R "$OUT/CloudDock.app" "$DMG_STAGE/"
+ln -s /Applications "$DMG_STAGE/Applications"
+/usr/bin/hdiutil create -volname "CloudDock" -srcfolder "$DMG_STAGE" -format UDZO -ov -quiet "$DMG"
+DMG_SHA=$(/usr/bin/shasum -a 256 "$DMG" | awk '{print $1}')
+
+/usr/bin/python3 - "$ZIP" "$SHA" "$DMG" "$DMG_SHA" "$VERSION" <<'PYEOF'
 import json, os, sys
-zip_path, sha, version = sys.argv[1], sys.argv[2], sys.argv[3]
+zip_path, sha, dmg_path, dmg_sha, version = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 out = os.path.dirname(zip_path)
+manifest = {'version': version, 'zip': os.path.basename(zip_path), 'sha256': sha,
+            'dmg': os.path.basename(dmg_path), 'dmg_sha256': dmg_sha, 'notes': ''}
 with open(os.path.join(out, 'update.json'), 'w') as f:
-    json.dump({'version': version, 'zip': os.path.basename(zip_path), 'sha256': sha, 'notes': ''}, f, indent=2)
+    json.dump(manifest, f, indent=2)
 PYEOF
 echo "更新包: $ZIP"
+echo "DMG: $DMG"
 echo "更新清单: $OUT/update.json"
 echo "安装: cp -R $OUT/CloudDock.app ~/Applications/ && open ~/Applications/CloudDock.app"
