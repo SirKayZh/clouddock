@@ -1580,7 +1580,16 @@ function passwordMenu(): MenuItemConstructorOptions {
     .sort((a, b) => b.updatedAt - a.updatedAt);
   const neverCount = vault.never.filter((n) => n.accountId === acc?.id).length;
   const MAX_SHOW = 30;
-  const items: MenuItemConstructorOptions[] = [
+  const items: MenuItemConstructorOptions[] = [];
+  // vault init 失败/子进程崩溃：不再静默「（暂无）」，给用户显式重试入口
+  if (vault.initFailed) {
+    items.push(
+      { label: '⚠️ 密码库初始化失败，已保存的密码暂时不可见', enabled: false },
+      { label: '重试初始化…', click: () => void retryVault() },
+      { type: 'separator' },
+    );
+  }
+  items.push(
     { label: acc ? `「${acc.name}」已保存的密码（点击删除）` : '请先选择账号', enabled: false },
     ...(mine.length === 0
       ? [{ label: '（暂无）', enabled: false } as MenuItemConstructorOptions]
@@ -1607,8 +1616,17 @@ function passwordMenu(): MenuItemConstructorOptions {
         if (acc) void clearAccountCreds(acc.id);
       },
     },
-  ];
+  );
   return { label: '密码', submenu: items };
+}
+
+/** 菜单「重试初始化」：重新拉起 vault 子进程（杀旧起新在 Vault.retry 内完成） */
+function retryVault(): void {
+  void vault.retry().then(() => {
+    console.log(`[clouddock] vault retry: available=${vault.available} failed=${vault.initFailed} entries=${vault.entries.length}`);
+    buildMenu();
+    sendState();
+  });
 }
 
 /** 「账号」菜单：重命名、清除 Cookie（作用于当前账号） */
@@ -1627,12 +1645,14 @@ function accountMenu(): MenuItemConstructorOptions {
 }
 
 let menuSig = '';
-/** 当前账号 / 已存密码变化时才重建菜单（sendState 很频繁） */
+/** 当前账号 / 已存密码 / vault 可用性变化时才重建菜单（sendState 很频繁） */
 function menuSignature(): string {
   return JSON.stringify([
     activeId,
     activeAccount()?.name,
     accounts.length,
+    vault.available,
+    vault.initFailed,
     vault.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
     vault.never.filter((n) => n.accountId === activeId).length,
   ]);
@@ -1837,6 +1857,9 @@ if (!gotLock) {
     void vault
       .init(app.getPath('userData'), accounts.map((a) => a.id))
       .then(() => {
+        console.log(
+          `[clouddock] vault init: available=${vault.available} failed=${vault.initFailed} entries=${vault.entries.length} never=${vault.never.length}`,
+        );
         buildMenu(); // vault 可用性可能影响菜单项，初始化完成后刷一次
         sendState();
       });

@@ -27,10 +27,17 @@ export class Vault {
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private _meta: { entries: CredMeta[]; never: NeverSave[] } = { entries: [], never: [] };
   private _available = false;
+  /** init 失败或子进程崩溃：密码菜单显示「初始化失败·点击重试」 */
+  private _initFailed = false;
   private exited = false;
+  private initArgs: { userDataDir: string; accountIds: string[] } | null = null;
 
   get available(): boolean {
     return this._available && !this.exited;
+  }
+
+  get initFailed(): boolean {
+    return this._initFailed;
   }
 
   get entries(): CredMeta[] {
@@ -41,29 +48,70 @@ export class Vault {
     return this._meta.never;
   }
 
-  /** 启动子进程并初始化（whenReady 内调用一次；子进程异常退出不自动重启，密码功能静默禁用） */
+  /** 启动子进程并初始化（whenReady 内调用一次） */
   async init(userDataDir: string, accountIds: string[]): Promise<void> {
+    this.initArgs = { userDataDir, accountIds };
+    await this.start();
+  }
+
+  /** 菜单「重试初始化」：杀掉旧子进程（可能已挂死）重新拉起 */
+  async retry(): Promise<void> {
+    if (!this.initArgs) return;
+    await this.start();
+  }
+
+  private async start(): Promise<void> {
+    this._initFailed = false;
+    // 清理旧进程与在途请求（重试场景旧子进程可能还活着但已无响应）
+    for (const p of this.pending.values()) p.reject(new Error('vault restarting'));
+    this.pending.clear();
+    if (this.child) {
+      try {
+        this.child.kill();
+      } catch {
+        /* 已退出 */
+      }
+      this.child = null;
+    }
+    this.exited = false;
+    this._available = false;
     try {
-      this.child = utilityProcess.fork(path.join(__dirname, 'vaultChild.js'));
-      this.child.on('exit', (code) => {
+      const child = utilityProcess.fork(path.join(__dirname, 'vaultChild.js'));
+      this.child = child;
+      // 子进程应答分发到 pending 请求（v1.6.0 起一直缺失此监听：
+      // 子进程回了消息没人接，所有 op 必然超时 → 密码功能静默禁用）
+      child.on('message', (msg: unknown) => {
+        const r = msg as VaultReply;
+        const p = this.pending.get(r.id);
+        if (p) {
+          this.pending.delete(r.id);
+          p.resolve(r.result);
+        }
+      });
+      child.on('exit', (code) => {
+        if (this.child !== child) return; // 被重试替换的旧进程的迟到事件
         this.exited = true;
         this._available = false;
+        this._initFailed = true;
         console.error(`[clouddock] vault child exited (code=${code}), password saving/filling disabled`);
       });
-      const res = (await this.request('init', { userDataDir, accountIds })) as
+      // init 含首次钥匙串创建/迁移（可能触发用户授权），超时放宽到 60s
+      const res = (await this.request('init', { ...this.initArgs }, 60_000)) as
         | { available: boolean; meta: { entries: CredMeta[]; never: NeverSave[] } }
         | { error?: unknown };
       if (res && 'available' in res) {
         this._available = res.available;
         this._meta = res.meta;
       }
+      if (!this.available) this._initFailed = true;
     } catch (err) {
       console.error('[clouddock] vault child failed to start:', err);
       this._available = false;
+      this._initFailed = true;
     }
   }
 
-  private request(op: string, payload: Record<string, unknown>): Promise<unknown> {
+  private request(op: string, payload: Record<string, unknown>, timeoutMs = 20_000): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.child || this.exited) {
         reject(new Error('vault child not running'));
@@ -74,7 +122,7 @@ export class Vault {
       this.child.postMessage({ id, op, ...payload });
       setTimeout(() => {
         if (this.pending.delete(id)) reject(new Error(`vault op timeout: ${op}`));
-      }, 20_000).unref?.();
+      }, timeoutMs).unref?.();
     });
   }
 

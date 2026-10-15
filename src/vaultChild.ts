@@ -12,6 +12,10 @@
  *  - 新服务名 com.clouddock.credentials.v1；
  *  - 首次启动读到旧条目（CloudDock Credential Key）时，把同一密钥写入新服务名，
  *    密文无需重新加密；旧条目保留不删，防止用户在旧版本间来回切换丢数据。
+ *
+ * soft-delete 原则：init 永远不删除磁盘上的密文。账号列表对不上的条目只在
+ * 展示层（meta）隐藏；真正的删除只发生在用户显式删除账号（drop-account）时。
+ * （曾有的 bug：accounts.json 损坏/重置后，init 的 prune 会把整个密码库静默清空。）
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -37,11 +41,14 @@ const ENC_PREFIX = 'v2:';
 const KEY_SERVICE = 'com.clouddock.credentials.v1';
 const LEGACY_KEY_SERVICE = 'CloudDock Credential Key';
 const KEY_ACCOUNT = 'clouddock';
-const SECURITY_BIN = '/usr/bin/security';
+/** 测试钩子：替换 security 二进制路径（仅 vitest 使用，生产环境恒为系统 security） */
+const SECURITY_BIN = process.env.CLOUDDOCK_VAULT_SECURITY_BIN ?? '/usr/bin/security';
 const MAX_ENTRIES_PER_ACCOUNT = 500;
 
 let userDataDir = '';
 let store: CredStore = { entries: [], never: [] };
+/** 当前有效账号 ID（主进程账号列表）；null = 不过滤（账号列表为空/未知时全部可见） */
+let validAccountIds: Set<string> | null = null;
 let masterKey: Buffer | null = null;
 /** 正在写盘的入口保护：避免 save 与 prune 并发交错写坏文件（单进程内顺序化足够） */
 let saveQueued = false;
@@ -185,15 +192,13 @@ function loadStore(): void {
   }
 }
 
-/** 主进程是账号列表的唯一权威：清理已删账号的残留条目，有变化则落盘 */
-function pruneAccounts(validIds: string[]): boolean {
-  const valid = new Set(validIds);
-  const before = store.entries.length + store.never.length;
-  store.entries = store.entries.filter((e) => valid.has(e.accountId));
-  store.never = store.never.filter((n) => valid.has(n.accountId));
-  const changed = store.entries.length + store.never.length !== before;
-  if (changed) saveStore();
-  return changed;
+/**
+ * 展示层可见性过滤：账号列表里已不存在的账号（dropAccount 失败的残留、或
+ * accounts.json 曾损坏重置），其条目从 meta 隐藏，但密文原样留在磁盘上。
+ * 绝不在 init 时删除——防止账号数据异常连坐清空整个密码库。
+ */
+function isVisible(x: { accountId: string }): boolean {
+  return validAccountIds === null || validAccountIds.has(x.accountId);
 }
 
 /* ---------- 去重 / 填充 ---------- */
@@ -229,8 +234,8 @@ interface VaultRequest {
 
 function meta(): unknown {
   return {
-    entries: store.entries.map((e) => ({ id: e.id, accountId: e.accountId, origin: e.origin, label: e.label, updatedAt: e.updatedAt })),
-    never: store.never.map((n) => ({ accountId: n.accountId, origin: n.origin })),
+    entries: store.entries.filter(isVisible).map((e) => ({ id: e.id, accountId: e.accountId, origin: e.origin, label: e.label, updatedAt: e.updatedAt })),
+    never: store.never.filter(isVisible).map((n) => ({ accountId: n.accountId, origin: n.origin })),
   };
 }
 
@@ -239,10 +244,11 @@ function handle(req: VaultRequest): unknown {
     case 'init': {
       userDataDir = String(req.userDataDir ?? '');
       const valid = Array.isArray(req.accountIds) ? (req.accountIds as unknown[]).map(String) : [];
+      // 空账号列表 = 状态未知：不过滤（与旧行为一致）；非空 = 只展示这些账号的条目
+      validAccountIds = valid.length > 0 ? new Set(valid) : null;
       masterKey = null; // 测试/热重启场景下重置缓存
       const available = ensureMasterKey() !== null;
       loadStore();
-      if (valid.length > 0) pruneAccounts(valid);
       return { available, meta: meta() };
     }
     case 'available':
