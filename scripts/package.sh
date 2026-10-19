@@ -41,7 +41,7 @@ cp -R package.json dist index.html start.html renderer.js README.md "$APP/Conten
 cp assets/clouddock.icns "$APP/Contents/Resources/clouddock.icns"
 plutil -replace CFBundleName -string "CloudDock" "$APP/Contents/Info.plist"
 plutil -replace CFBundleDisplayName -string "CloudDock" "$APP/Contents/Info.plist"
-plutil -replace CFBundleIdentifier -string "com.dylanzheng.clouddock" "$APP/Contents/Info.plist"
+plutil -replace CFBundleIdentifier -string "com.sirkayzh.clouddock" "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleIconFile -string "clouddock.icns" "$APP/Contents/Info.plist"
 
