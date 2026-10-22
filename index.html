@@ -34,12 +34,12 @@
     }
     .sb-header {
       /* 上方 40px 留给 macOS 红绿灯，品牌放在红绿灯下面 */
-      height: 84px; flex: none; display: flex; align-items: center;
-      padding: 38px 14px 0 16px;
+      height: 78px; flex: none; display: flex; align-items: center;
+      padding: 28px 14px 0 16px;
       -webkit-app-region: drag;
     }
     .sb-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .sb-logo { width: 26px; height: 26px; flex: none; display: block; }
+    .sb-logo { width: 32px; height: 32px; flex: none; display: block; border-radius: 8px; }
     .sb-title { font-size: 14px; font-weight: 700; line-height: 1.2; white-space: nowrap; letter-spacing: .2px; }
     .sb-title span { display: block; font-size: 10px; font-weight: 400; color: #6A82A3; letter-spacing: 0; }
     .sb-list { flex: 1; overflow-y: auto; padding: 6px; }
@@ -112,7 +112,7 @@
     #sidebar { transition: none; }
     body.collapsed #sidebar { width: 88px; }
     /* 窄栏顶部：app logo 恢复显示（仅 logo，标题隐藏），整体上移让账号区更靠上 */
-    body.collapsed .sb-header { height: 62px; padding: 34px 0 0; justify-content: center; }
+    body.collapsed .sb-header { padding-left: 0; padding-right: 0; justify-content: center; }  /* 高度/上边距/logo 尺寸与展开态完全一致，仅水平居中 */
     body.collapsed .sb-title,
     body.collapsed .acc-info,
     body.collapsed .acc-hint,
@@ -145,9 +145,7 @@
     body.collapsed .sb-list { padding: 4px 0; }
     body.collapsed .sb-footer { padding: 10px; }
     /* 窄栏（88px）：logo / 切换器 / 头像 同一条居中轴线，宽度成梯度（30 → 68 → 36） */
-    body.collapsed .sb-header { height: 64px; padding: 34px 0 0; }
-    body.collapsed .sb-logo { width: 30px; height: 30px; border-radius: 8px; }
-    body.collapsed .sb-berths { padding: 8px 8px 6px; }
+    body.collapsed .sb-berths { padding: 0 8px 10px; }
     body.collapsed .berth-dd { justify-content: center; gap: 3px; min-height: 30px; padding: 5px 6px; font-size: 12px; }
     body.collapsed .berth-dd .berth-dd-name { flex: 0 1 auto; text-align: center; }
 
