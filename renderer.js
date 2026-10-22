@@ -80,6 +80,9 @@ function renderBerths() {
   if (sig === berthSig && els.berthBar.childElementCount > 0) return;
   berthSig = sig;
   els.berthBar.innerHTML = '';
+  // chips 放滚动容器（展开态横向滚 / 收起态限高竖向滚），＋按钮固定在容器外
+  const scroll = document.createElement('div');
+  scroll.className = 'berth-scroll';
   state.berths.forEach((b) => {
     const chip = document.createElement('button');
     chip.className = 'berth-chip' + (b.id === state.activeBerthId ? ' active' : '');
@@ -93,8 +96,12 @@ function renderBerths() {
       e.preventDefault();
       window.api.berthMenu(b.id);
     });
-    els.berthBar.appendChild(chip);
+    scroll.appendChild(chip);
   });
+  els.berthBar.appendChild(scroll);
+  // 选中工作区自动滚入视野（工作区多时切换不用手动找）
+  const active = scroll.querySelector('.berth-chip.active');
+  if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   const add = document.createElement('button');
   add.className = 'berth-add';
   add.title = '新建工作区';
