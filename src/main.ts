@@ -227,6 +227,18 @@ function saveUiNow(): void {
   }
 }
 
+let uiSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** UI 状态落盘去抖（500ms 合并）：切换工作区/收起侧栏的热路径不同步写盘。
+ * quit 有兜底：before-quit → saveAccountsNow → saveUiNow。 */
+function scheduleUiSave(): void {
+  if (uiSaveTimer) return;
+  uiSaveTimer = setTimeout(() => {
+    uiSaveTimer = null;
+    saveUiNow();
+  }, 500);
+}
+
 function saveAccountsNow(): void {
   try {
     const file = accountsFile();
@@ -794,6 +806,8 @@ function sendState(): void {
 const prewarmedTabs = new Set<string>();
 /** 预热上限：额外常驻渲染进程的内存代价（Chrome Aperitif 同样的取舍） */
 const PREWARM_MAX = 4;
+/** 跨区预热上限：其他工作区「上次活跃账号」各预热 1 个视图（切区零冷启动） */
+const PREWARM_BERTHS_MAX = 6;
 
 function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView {
   const ses = session.fromPartition(`persist:clouddock-${acc.id}`);
@@ -1106,7 +1120,7 @@ function switchBerth(id: string): boolean {
     activeId = null;
     sendState();
   }
-  saveUiNow();
+  scheduleUiSave(); // 热路径去抖落盘，不同步写盘
   schedulePrewarm(3_000);
   return true;
 }
@@ -1187,7 +1201,7 @@ function cycleTab(delta: number): void {
 function setSidebarCollapsed(next: boolean): void {
   if (sidebarCollapsed === next) return;
   sidebarCollapsed = next;
-  saveUiNow();
+  scheduleUiSave();
   layoutViews();
   sendState();
 }
@@ -1426,6 +1440,21 @@ function prewarmViews(): void {
     if (!accounts.includes(acc)) continue;
     createTabView(acc, tab, true);
     made += 1;
+  }
+  // 跨区预热：其他工作区各预热「上次活跃账号」的视图（每区至多 1 个），
+  // 切区命中热视图零冷创建——这是切区卡顿的主因消除点
+  let cross = 0;
+  for (const [bid, accId] of Object.entries(berthActive)) {
+    if (cross >= PREWARM_BERTHS_MAX) break;
+    if (bid === activeBerthId || !accId) continue;
+    const acc = accounts.find((a) => a.id === accId);
+    if (!acc || !acc.home || !isHttpUrl(acc.home)) continue;
+    if (berthOfAccount(acc, berthIds()) !== bid) continue; // 记忆账号已不在此区则跳过
+    ensureAccountTabs(acc);
+    const tab = acc.tabs.find((t) => t.id === acc.activeTabId) ?? acc.tabs[0];
+    if (!tab || views.has(tab.id)) continue;
+    createTabView(acc, tab, true);
+    cross += 1;
   }
   // 活跃账号的 spare：新建标签页（⌘T / 链接新开）零冷启动
   const active = activeAccount();
@@ -2091,7 +2120,11 @@ if (!gotLock) {
   app.on('before-quit', () => {
     if (saveTimer) clearTimeout(saveTimer);
     if (prewarmTimer) clearTimeout(prewarmTimer);
-    saveAccountsNow();
+    if (uiSaveTimer) {
+      clearTimeout(uiSaveTimer);
+      uiSaveTimer = null;
+    }
+    saveAccountsNow(); // 内部含 saveUiNow：去抖中的 UI 状态在此 flush
     // 正常退出：删运行标记（下次启动不做崩溃恢复）
     try {
       fs.rmSync(runningFlagFile(), { force: true });
