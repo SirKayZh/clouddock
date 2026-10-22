@@ -193,28 +193,38 @@
       content: ''; position: absolute; left: 18px; right: 18px; bottom: 0;
       height: 1px; background: var(--rail-line);
     }
+    /* 触发器：按内容收缩、居中的小标签（与 26px logo / 36px 头像同一视觉量级），
+       名字允许换行，不再被省略 */
     body.collapsed .berth-dd {
       flex-direction: row; justify-content: center; align-items: center; gap: 3px;
-      width: 100%; height: 26px; padding: 0 6px; border-radius: 13px;
+      width: fit-content; max-width: 100%; min-width: 52px; margin: 0 auto;
+      height: auto; min-height: 24px; padding: 3px 9px; border-radius: 8px;
       border: none; background: rgba(0, 82, 217, .09);
     }
     body.collapsed .berth-dd:hover { background: rgba(0, 82, 217, .15); }
     body.collapsed .berth-dd.open { background: rgba(0, 82, 217, .2); }
     body.collapsed .berth-dd .berth-dd-name {
       flex: 0 1 auto; min-width: 0; font-size: 12px; font-weight: 600; color: var(--blue);
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+      line-height: 1.3; white-space: normal; word-break: break-all; overflow: visible; text-overflow: clip; text-align: center;
     }
-    body.collapsed .berth-dd .berth-dd-caret { display: inline; font-size: 9px; color: var(--blue); opacity: .75; }
-    /* 收起态：面板 = 窄栏内 macOS 菜单风格（左对齐、✓ 勾选、选中项浅蓝底） */
+    body.collapsed .berth-dd .berth-dd-caret { display: inline; font-size: 8px; color: var(--blue); opacity: .75; }
+    /* 收起态：面板 = 窄栏内 macOS 菜单风格。窄栏仅 88px，所以去掉 ✓ 占位列、
+       选中项用浅蓝底+蓝色粗体表示，名字整行显示、过长自动换行（不省略） */
     body.collapsed .berth-dd-panel {
-      left: 0; top: 34px; margin-top: 0; width: 100%; padding: 5px; border-radius: 12px;
-      box-shadow: 0 10px 32px rgba(15, 37, 74, .2);
+      left: 4px; right: 4px; width: auto; top: calc(100% - 8px); margin-top: 0; padding: 4px; border-radius: 12px;
+      overflow-x: hidden; box-shadow: 0 10px 32px rgba(15, 37, 74, .2);
     }
-    body.collapsed .berth-dd-item { justify-content: flex-start; gap: 6px; height: 30px; padding: 0 9px; }
+    body.collapsed .berth-dd-item {
+      justify-content: center; gap: 0; height: auto; min-height: 30px; padding: 6px 4px; border-radius: 8px;
+    }
     body.collapsed .berth-dd-item.active { background: #E9F0FD; }
-    body.collapsed .berth-dd-item .berth-dd-check { width: 12px; }
-    body.collapsed .berth-dd-item .berth-dd-item-name { text-align: left; font-weight: 500; }
-    body.collapsed .berth-dd-new { justify-content: flex-start; padding: 0 9px; border-top: none; margin-top: 4px; border-radius: 7px; }
+    body.collapsed .berth-dd-item .berth-dd-check { display: none; }
+    body.collapsed .berth-dd-item .berth-dd-item-name {
+      flex: 1 1 auto; text-align: center; font-weight: 500; line-height: 1.3;
+      white-space: normal; word-break: break-all; overflow: visible; text-overflow: clip;
+    }
+    body.collapsed .berth-dd-item.active .berth-dd-item-name { font-weight: 600; }
+    body.collapsed .berth-dd-new { justify-content: center; padding: 6px 4px; height: auto; min-height: 30px; border-top: none; margin-top: 4px; border-radius: 8px; white-space: normal; }
 
     .add-btn {
       width: 100%; height: 36px; border: none;
