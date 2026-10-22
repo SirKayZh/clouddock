@@ -18,6 +18,42 @@ export function berthOfAccount(acc: Account, berthIds?: Set<string>): string {
   return b && (!berthIds || berthIds.has(b)) ? b : DEFAULT_BERTH_ID;
 }
 
+/**
+ * 工作区内账号重排（拖拽排序核心逻辑）：
+ * orderedIds 必须恰好是「该工作区当前可见账号」的完整新顺序（多一个/少一个都拒绝）。
+ * 语义：本区账号在全局数组中的「槽位集合」不变，只是槽位内按新顺序重新填充；
+ * 其他工作区账号的位置与相对顺序完全不受影响。
+ * 无变化/入参不合法时原样返回（引用不变，调用方可直接判 === 短路）。
+ */
+export function reorderAccountsInBerth(
+  accounts: Account[],
+  berthId: string,
+  orderedIds: string[],
+): Account[] {
+  const berthIds = new Set(accounts.filter((a) => berthOfAccount(a) === berthId).map((a) => a.id));
+  if (berthIds.size < 2) return accounts; // 0/1 个账号没有重排意义
+  const seen = new Set<string>();
+  for (const id of orderedIds) {
+    if (!berthIds.has(id) || seen.has(id)) return accounts; // 含外区 id / 重复 id → 拒绝
+    seen.add(id);
+  }
+  if (seen.size !== berthIds.size) return accounts; // 不是完整列表 → 拒绝
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  const queue = orderedIds.map((id) => byId.get(id)).filter((a): a is Account => Boolean(a));
+  const result: Account[] = [];
+  let qi = 0;
+  for (const a of accounts) {
+    if (berthIds.has(a.id)) {
+      const acc = queue[qi];
+      if (acc) result.push(acc);
+      qi += 1;
+    } else {
+      result.push(a);
+    }
+  }
+  return result;
+}
+
 /** 磁盘读入的 Berth 结构/类型校验（berths.json） */
 export function sanitizeBerth(raw: unknown): Berth | null {
   if (!raw || typeof raw !== 'object') return null;

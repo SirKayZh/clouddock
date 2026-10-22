@@ -337,6 +337,33 @@ function renderToolbar() {
 }
 
 let listSig = '';
+/** 拖拽排序状态：正在拖的账号 id + 落点上/下半标记 */
+let dragAccId = null;
+
+function clearDropMarks() {
+  els.list.querySelectorAll('.drop-before,.drop-after').forEach((el) => {
+    el.classList.remove('drop-before');
+    el.classList.remove('drop-after');
+  });
+}
+
+/** 计算新顺序并提交主进程（orderedIds 必须是当前区可见账号的完整列表） */
+async function commitReorder(targetId, before) {
+  if (!dragAccId) return;
+  const dragId = dragAccId;
+  const ids = state.accounts.map((a) => a.id);
+  const from = ids.indexOf(dragId);
+  if (from < 0) return;
+  ids.splice(from, 1);
+  let at = ids.length; // 无明确落点（拖到列表空白处）→ 追加到末尾
+  if (targetId && targetId !== dragId) {
+    const ti = ids.indexOf(targetId);
+    if (ti >= 0) at = before ? ti : ti + 1;
+  }
+  ids.splice(at, 0, dragId);
+  const old = state.accounts.map((a) => a.id).join(',');
+  if (ids.join(',') !== old) await window.api.reorder(ids);
+}
 
 function renderList() {
   // 签名未变则不重建，避免页面加载期间的频繁状态推送吞掉点击
@@ -376,7 +403,45 @@ function renderList() {
       await window.api.remove(acc.id);
     });
     item.querySelector('.acc-name').addEventListener('dblclick', () => startRename(item, acc));
+    // 拖拽排序：HTML5 DnD，落点按上/下半判定插前/插后
+    item.draggable = true;
+    item.addEventListener('dragstart', (e) => {
+      dragAccId = acc.id;
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', acc.id); } catch (_) { /* Safari 老版本兜底 */ }
+      item.classList.add('dragging');
+    });
+    item.addEventListener('dragend', () => {
+      item.classList.remove('dragging');
+      clearDropMarks();
+      dragAccId = null;
+    });
+    item.addEventListener('dragover', (e) => {
+      if (!dragAccId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = item.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      clearDropMarks();
+      item.classList.add(before ? 'drop-before' : 'drop-after');
+    });
+    item.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const rect = item.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      commitReorder(acc.id, before);
+    });
     els.list.appendChild(item);
+  });
+  // 拖到列表空白处 = 追加到末尾
+  els.list.addEventListener('dragover', (e) => {
+    if (!dragAccId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  });
+  els.list.addEventListener('drop', (e) => {
+    e.preventDefault();
+    commitReorder(null, false);
   });
 }
 

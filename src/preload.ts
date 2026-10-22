@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('api', {
   rename: (id: string, name: string): Promise<boolean> =>
     ipcRenderer.invoke('accounts:rename', id, name),
   switch: (id: string): Promise<boolean> => ipcRenderer.invoke('accounts:switch', id),
+  /** 拖拽排序：orderedIds = 当前工作区可见账号的完整新顺序 */
+  reorder: (orderedIds: string[]): Promise<boolean> => ipcRenderer.invoke('accounts:reorder', orderedIds),
   berthsList: (): Promise<Berth[]> => ipcRenderer.invoke('berths:list'),
   berthAdd: (name: string, icon?: string): Promise<Berth | null> =>
     ipcRenderer.invoke('berths:add', name, icon),

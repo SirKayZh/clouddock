@@ -7,6 +7,7 @@ import {
   hostnameOf,
   isHttpUrl,
   registrableDomain,
+  reorderAccountsInBerth,
   resolveInput,
   sanitizeAccount,
   sanitizeBerth,
@@ -245,5 +246,40 @@ describe('sanitizeAccount 透传 berthId（v2.0）', () => {
     expect(sanitizeAccount({ id: 'a1', name: 'n', berthId: '', tabs: [] })?.berthId).toBeUndefined();
     expect(sanitizeAccount({ id: 'a1', name: 'n', berthId: 123, tabs: [] })?.berthId).toBeUndefined();
     expect(sanitizeAccount({ id: 'a1', name: 'n', tabs: [] })?.berthId).toBeUndefined();
+  });
+});
+
+describe('reorderAccountsInBerth（工作区内账号拖拽重排，v2.3）', () => {
+  const mk = (id: string, berthId?: string) => ({
+    id, name: id, note: '', color: '#000000', createdAt: 0, berthId, tabs: [], activeTabId: null,
+  });
+  // 全局顺序：区A(云账号)与区B交错排列
+  const accounts = [mk('a1'), mk('b1', 'B'), mk('a2'), mk('b2', 'B'), mk('a3'), mk('b3', 'B')];
+
+  it('重排本区账号，其他区账号相对顺序不受影响', () => {
+    const next = reorderAccountsInBerth(accounts, DEFAULT_BERTH_ID, ['a3', 'a1', 'a2']);
+    expect(next.map((a) => a.id)).toEqual(['a3', 'b1', 'a1', 'b2', 'a2', 'b3']);
+  });
+
+  it('B 区重排时 A 区位置保持', () => {
+    const next = reorderAccountsInBerth(accounts, 'B', ['b2', 'b3', 'b1']);
+    expect(next.map((a) => a.id)).toEqual(['a1', 'b2', 'a2', 'b3', 'a3', 'b1']);
+  });
+
+  it('少一个 id（非完整列表）→ 原样返回（引用不变）', () => {
+    expect(reorderAccountsInBerth(accounts, DEFAULT_BERTH_ID, ['a1', 'a2'])).toBe(accounts);
+  });
+
+  it('混入其他区的 id → 拒绝', () => {
+    expect(reorderAccountsInBerth(accounts, DEFAULT_BERTH_ID, ['a1', 'b1', 'a2', 'a3'])).toBe(accounts);
+  });
+
+  it('重复 id → 拒绝', () => {
+    expect(reorderAccountsInBerth(accounts, DEFAULT_BERTH_ID, ['a1', 'a2', 'a2', 'a3'])).toBe(accounts);
+  });
+
+  it('0/1 个账号的区 → 无操作', () => {
+    expect(reorderAccountsInBerth([mk('x1'), mk('y1', 'B')], 'B', ['y1'])).toHaveLength(2);
+    expect(reorderAccountsInBerth([mk('x1')], 'B', [])).toHaveLength(1);
   });
 });

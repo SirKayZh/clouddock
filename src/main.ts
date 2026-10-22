@@ -29,6 +29,7 @@ import {
   resolveInput,
   isHttpUrl,
   sanitizeAccount,
+  reorderAccountsInBerth,
 } from './pure';
 import { vault } from './vaultClient';
 import { checkForUpdatesInteractive, updateTokenFromArgv, reconcilePendingUpdate } from './updater';
@@ -1582,6 +1583,17 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('accounts:remove', (_e, id: unknown) => removeAccount(String(id)));
+
+  /** 拖拽排序：orderedIds = 当前工作区可见账号的完整新顺序（槽位内换序，其他区不受影响） */
+  ipcMain.handle('accounts:reorder', (_e, orderedIds: unknown): boolean => {
+    if (!Array.isArray(orderedIds)) return false;
+    const next = reorderAccountsInBerth(accounts, activeBerthId, orderedIds.map(String));
+    if (next === accounts) return false; // 无变化/入参不合法
+    accounts = next;
+    scheduleSave();
+    sendState();
+    return true;
+  });
 
   ipcMain.handle('accounts:rename', (_e, id: unknown, name: unknown): boolean => {
     const acc = accounts.find((a) => a.id === String(id));

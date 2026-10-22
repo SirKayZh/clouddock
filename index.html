@@ -140,9 +140,8 @@
     /* ---------- 侧边栏收起（窄栏只显示头像，宽度须与主进程 RAIL_W=88 一致） ---------- */
     #sidebar { transition: none; }
     body.collapsed #sidebar { width: 88px; }
-    body.collapsed .sb-header { padding: 44px 0 0; justify-content: center; }
-    /* 收起态隐藏顶部云形 logo（用户反馈：工作区切换处不需要 icon，logo 与工作区名视觉连体易混淆） */
-    body.collapsed .sb-brand { display: none; }
+    /* 窄栏顶部：app logo 恢复显示（仅 logo，标题隐藏），整体上移让账号区更靠上 */
+    body.collapsed .sb-header { height: 62px; padding: 34px 0 0; justify-content: center; }
     body.collapsed .sb-title,
     body.collapsed .acc-info,
     body.collapsed .acc-hint,
@@ -151,6 +150,10 @@
     body.collapsed .sb-tip,
     body.collapsed .add-full { display: none !important; }
     body.collapsed .add-mini { display: inline; font-size: 16px; }
+    /* 拖拽排序视觉反馈：半透明源项 + 上/下边缘蓝色插入线 */
+    .acc-item.dragging { opacity: .35; }
+    .acc-item.drop-before { box-shadow: inset 0 2px 0 var(--blue); }
+    .acc-item.drop-after { box-shadow: inset 0 -2px 0 var(--blue); }
     /* 窄栏：圆角方形头像居中，名字缩小显示在下方（企业微信一样） */
     body.collapsed .acc-item {
       flex-direction: column; justify-content: center; gap: 4px;
