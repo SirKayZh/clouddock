@@ -62,8 +62,40 @@ let accounts: Account[] = [];
 let activeId: string | null = null;
 
 /* ---------- 测试支持：自定义数据目录 ---------- */
-if (process.env.CLOUDDOCK_DATA_DIR) {
-  app.setPath('userData', process.env.CLOUDDOCK_DATA_DIR);
+if (process.env.WORKPIER_DATA_DIR) {
+  app.setPath('userData', process.env.WORKPIER_DATA_DIR);
+}
+
+/*
+ * ---------- v2.0 改名迁移：CloudDock → WorkPier（一次性，幂等） ----------
+ * userData 目录名随 package.json 的 productName 变化（Electron 规则），老用户升级 v2.0 后
+ * 首启把整个旧目录原地 rename 过来（同卷 O(1)），accounts.json / credentials.json /
+ * Partitions（各账号会话）全部随迁。
+ * 注意：Chromium 在 main.js 执行前就可能建好新目录的 profile 骨架（Cache/Singleton 等），
+ * 因此不能用「新目录不存在」判定首启——以 accounts.json 的存在性为准；
+ * 迁移动作 = 骨架挪 temp + 旧目录整体 rename + relaunch 干净重启（updater 同款先例），
+ * 避免在已初始化的 profile 上原地改名的中程状态风险。失败不阻塞启动：数据留在原目录，
+ * 下次启动按同一判定自动重试。
+ */
+if (!process.env.WORKPIER_DATA_DIR) {
+  try {
+    const appData = app.getPath('appData');
+    const legacyDir = path.join(appData, 'CloudDock');
+    const newDir = path.join(appData, 'WorkPier');
+    if (fs.existsSync(path.join(legacyDir, 'accounts.json')) && !fs.existsSync(path.join(newDir, 'accounts.json'))) {
+      if (fs.existsSync(newDir)) {
+        const trash = path.join(app.getPath('temp'), `workpier-skeleton-${Date.now()}`);
+        fs.renameSync(newDir, trash);
+        console.log(`[workpier] 新目录 profile 骨架已挪至 ${trash}（交由系统 tmp 清理）`);
+      }
+      fs.renameSync(legacyDir, newDir);
+      console.log(`[workpier] 已迁移历史数据目录: ${legacyDir} -> ${newDir}，relaunch 干净重启`);
+      app.relaunch();
+      app.exit(0);
+    }
+  } catch (err) {
+    console.error('[workpier] 历史数据目录迁移失败（数据保留在原目录，下次启动重试）:', err);
+  }
 }
 
 // 凭据加密不再使用 Chromium 的钥匙串条目（"CloudDock Safe Storage"，授权绑定 ad-hoc 签名，每次更新都会重新弹框），
@@ -87,7 +119,7 @@ crashReporter.start({
 function runningFlagFile(): string {
   return path.join(app.getPath('userData'), 'running.flag');
 }
-/** 更新启动参数（--clouddock-update-token <file>）：非空表示本次由更新流程拉起（须先于 crashedLastRun 判定） */
+/** 更新启动参数（--workpier-update-token <file>，v1.x 老进程传 --clouddock-update-token，均识别）：非空表示本次由更新流程拉起（须先于 crashedLastRun 判定） */
 const updateToken = updateTokenFromArgv(process.argv);
 /**
  * 上次是否异常退出（模块加载时判定一次，全程不变）。
@@ -136,7 +168,7 @@ function saveUiNow(): void {
     // activeId 为空时沿用已读到的上次值，避免只切侧边栏就丢了「上次账号」
     writeFileAtomic(file, JSON.stringify({ activeId: activeId ?? savedActiveId, sidebarCollapsed }));
   } catch (err) {
-    console.error('[clouddock] save ui failed:', err);
+    console.error('[workpier] save ui failed:', err);
   }
 }
 
@@ -147,7 +179,7 @@ function saveAccountsNow(): void {
     writeFileAtomic(file, JSON.stringify(accounts, null, 2));
     saveUiNow();
   } catch (err) {
-    console.error('[clouddock] save failed:', err);
+    console.error('[workpier] save failed:', err);
   }
 }
 
@@ -181,7 +213,7 @@ function loadAccounts(): void {
       } catch {
         /* ignore */
       }
-      console.error('[clouddock] accounts.json 解析失败，已备份:', err);
+      console.error('[workpier] accounts.json 解析失败，已备份:', err);
     }
   }
   for (const acc of accounts) ensureAccountTabs(acc);
@@ -519,8 +551,8 @@ function onMainNavigated(acc: Account, url: string): void {
  */
 
 const UIN_COOKIE_DOMAINS = ['tencent.com', 'tencentcloud.com', 'qcloud.com'];
-/** 仅测试：设置了 CLOUDDOCK_DATA_DIR 时才允许本地域名，便于自动化测试 */
-const UIN_TEST_DOMAINS: string[] = process.env.CLOUDDOCK_DATA_DIR ? ['127.0.0.1', 'localhost'] : [];
+/** 仅测试：设置了 WORKPIER_DATA_DIR 时才允许本地域名，便于自动化测试 */
+const UIN_TEST_DOMAINS: string[] = process.env.WORKPIER_DATA_DIR ? ['127.0.0.1', 'localhost'] : [];
 
 function uinDomainOk(domain: string): boolean {
   const d = domain.replace(/^\./, '').toLowerCase();
@@ -554,7 +586,7 @@ async function detectAccountIdentity(accountId: string): Promise<void> {
     }
     applyAutoName(acc, 'uin', uin, uin === owner ? '腾讯云' : `腾讯云子账号 · 主账号 ${owner}`);
   } catch (err) {
-    console.error('[clouddock] detect identity failed:', err);
+    console.error('[workpier] detect identity failed:', err);
   }
 }
 
@@ -1159,7 +1191,7 @@ async function clearAccountData(acc: Account, scope: ClearScope): Promise<boolea
     }
     await ses.cookies.flushStore();
   } catch (err) {
-    console.error('[clouddock] clear cookies failed:', err);
+    console.error('[workpier] clear cookies failed:', err);
     return false;
   }
 
@@ -1197,7 +1229,7 @@ async function clearAllAccountsCookies(): Promise<boolean> {
       await ses.clearStorageData({ storages: ['cookies'] });
       await ses.cookies.flushStore();
     } catch (err) {
-      console.error('[clouddock] clear cookies failed:', err);
+      console.error('[workpier] clear cookies failed:', err);
     }
     delete a.uin;
     delete a.ownerUin;
@@ -1274,7 +1306,7 @@ async function removeAccount(id: string): Promise<boolean> {
     await ses.clearStorageData();
     await ses.clearCache();
   } catch (err) {
-    console.error('[clouddock] clear session failed:', err);
+    console.error('[workpier] clear session failed:', err);
   }
   return true;
 }
@@ -1623,7 +1655,7 @@ function passwordMenu(): MenuItemConstructorOptions {
 /** 菜单「重试初始化」：重新拉起 vault 子进程（杀旧起新在 Vault.retry 内完成） */
 function retryVault(): void {
   void vault.retry().then(() => {
-    console.log(`[clouddock] vault retry: available=${vault.available} failed=${vault.initFailed} entries=${vault.entries.length}`);
+    console.log(`[workpier] vault retry: available=${vault.available} failed=${vault.initFailed} entries=${vault.entries.length}`);
     buildMenu();
     sendState();
   });
@@ -1845,7 +1877,7 @@ if (!gotLock) {
       fs.mkdirSync(app.getPath('userData'), { recursive: true });
       writeFileAtomic(runningFlagFile(), String(Date.now()));
     } catch (err) {
-      console.error('[clouddock] write running flag failed:', err);
+      console.error('[workpier] write running flag failed:', err);
     }
     pruneCrashDumps();
 
@@ -1858,7 +1890,7 @@ if (!gotLock) {
       .init(app.getPath('userData'), accounts.map((a) => a.id))
       .then(() => {
         console.log(
-          `[clouddock] vault init: available=${vault.available} failed=${vault.initFailed} entries=${vault.entries.length} never=${vault.never.length}`,
+          `[workpier] vault init: available=${vault.available} failed=${vault.initFailed} entries=${vault.entries.length} never=${vault.never.length}`,
         );
         buildMenu(); // vault 可用性可能影响菜单项，初始化完成后刷一次
         sendState();

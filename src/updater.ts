@@ -8,12 +8,13 @@
  *  4. /usr/bin/ditto 解包（苹果签名二进制，与钥匙串方案一致的供应链原则）→ 剥离 quarantine
  *  5. 原子切换：旧 .app rename 为 *.previous（运行中可 rename）→ 新 .app 就位
  *     —— 磁盘上始终保留两代版本，任一时刻崩溃都能回到上一版（Chrome Versions/.39+.40 的做法）
- *  6. app.relaunch 拉起新版（携带 --clouddock-update-token 参数），老进程原地等待握手信号：
+ *  6. app.relaunch 拉起新版（携带 --workpier-update-token 参数；v1.x 老进程拉起时
+ *     传的是旧名 --clouddock-update-token，均能识别），老进程原地等待握手信号：
  *     新版窗口 ready 后写 token → 老进程正常退出；30s 未握手 → 判定新版起不来，
  *     自动回滚 rename 并弹窗告知，老进程继续运行。任何时刻断电/崩溃：
  *     下次启动检查 pending-update.json 兜底清理。
  *
- * 本地包（package.sh 产出）：release/CloudDock-<ver>-update.zip + release/update.json，
+ * 本地包（package.sh 产出）：release/WorkPier-<ver>-update.zip + release/update.json，
  * 把这两个文件放任意目录/静态服务器即可作为更新源。
  */
 import { app, dialog } from 'electron';
@@ -26,10 +27,12 @@ import { execFile } from 'node:child_process';
 import { sanitizeUpdateManifest, isNewerVersion, isHttpUrl } from './pure';
 import type { UpdateManifest } from './pure';
 
-export const UPDATE_TOKEN_ARG = '--clouddock-update-token';
+export const UPDATE_TOKEN_ARG = '--workpier-update-token';
+/** v1.x（CloudDock 时代）老进程 relaunch 时携带的旧参数名，兼容 1.7.x → 2.0 跨版升级握手 */
+const LEGACY_UPDATE_TOKEN_ARG = '--clouddock-update-token';
 
 export function updateTokenFromArgv(argv: string[]): string | null {
-  const i = argv.indexOf(UPDATE_TOKEN_ARG);
+  const i = Math.max(argv.indexOf(UPDATE_TOKEN_ARG), argv.indexOf(LEGACY_UPDATE_TOKEN_ARG));
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null;
 }
 
@@ -62,7 +65,7 @@ function writeUpdateFeed(feed: string): void {
     fs.writeFileSync(tmp, JSON.stringify(s, null, 2), { encoding: 'utf-8' });
     fs.renameSync(tmp, file);
   } catch (err) {
-    console.error('[clouddock] save settings failed:', err);
+    console.error('[workpier] save settings failed:', err);
   }
 }
 
@@ -165,7 +168,7 @@ export function reconcilePendingUpdate(): void {
     if (!fs.existsSync(file)) return;
     const pending = JSON.parse(fs.readFileSync(file, 'utf-8')) as { to?: unknown };
     if (pending.to === app.getVersion()) {
-      console.log(`[clouddock] update to ${app.getVersion()} verified`);
+      console.log(`[workpier] update to ${app.getVersion()} verified`);
     }
     fs.rmSync(file, { force: true });
   } catch {
@@ -229,7 +232,7 @@ export async function checkForUpdatesInteractive(preExit: () => void): Promise<v
     }
     manifest = sanitizeUpdateManifest(JSON.parse(text));
   } catch (err) {
-    console.error('[clouddock] read manifest failed:', err);
+    console.error('[workpier] read manifest failed:', err);
     msgBox({ type: 'error', message: '读取更新清单失败', detail: String((err as Error).message ?? err) });
     return;
   }
@@ -311,7 +314,7 @@ export async function checkForUpdatesInteractive(preExit: () => void): Promise<v
       } catch {
         /* ignore */
       }
-      console.log(`[clouddock] updated to ${manifest.version}, exiting old instance`);
+      console.log(`[workpier] updated to ${manifest.version}, exiting old instance`);
       preExit();
       process.exit(0);
     }
@@ -322,7 +325,7 @@ export async function checkForUpdatesInteractive(preExit: () => void): Promise<v
     rmRf(staging);
     msgBox({ type: 'warning', message: `更新到 ${manifest.version} 失败，已回滚到 ${current}`, detail: '新版本未能正常启动。可直接继续使用当前版本，稍后再试。' });
   } catch (err) {
-    console.error('[clouddock] update failed:', err);
+    console.error('[workpier] update failed:', err);
     rmRf(staging);
     msgBox({ type: 'error', message: '更新失败', detail: `${String((err as Error).message ?? err)}\n当前版本未受影响。` });
   }

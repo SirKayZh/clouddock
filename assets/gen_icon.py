@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CloudDock App 图标生成：PIL 超采样绘制（2048 -> 1024）+ 生成完整 iconset"""
+"""WorkPier App 图标生成：PIL 超采样绘制（2048 -> 1024）+ 生成完整 iconset"""
 import os
 import shutil
 import subprocess
@@ -59,7 +59,7 @@ def main() -> None:
     master = make_master()
     master.save(os.path.join(out_dir, "master-1024.png"))
 
-    iconset = os.path.join(out_dir, "clouddock.iconset")
+    iconset = os.path.join(out_dir, "workpier.iconset")
     shutil.rmtree(iconset, ignore_errors=True)
     os.makedirs(iconset)
 
@@ -78,7 +78,7 @@ def main() -> None:
     for name, px in sizes.items():
         master.resize((px, px), Image.LANCZOS).save(os.path.join(iconset, name))
 
-    icns = os.path.join(out_dir, "clouddock.icns")
+    icns = os.path.join(out_dir, "workpier.icns")
     subprocess.run(
         ["iconutil", "-c", "icns", iconset, "-o", icns], check=True,
     )

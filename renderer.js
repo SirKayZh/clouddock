@@ -123,7 +123,7 @@ function renderBanner() {
     els.banner.innerHTML = `
       <span class="bn-icon">⚠️</span>
       <span class="bn-text">
-        <span class="bn-title">CloudDock 上次未正常退出</span>
+        <span class="bn-title">WorkPier 上次未正常退出</span>
         <span class="bn-sub">是否恢复上次打开的账号与标签页？（登录态不受影响）</span>
       </span>
       <button class="btn primary" id="bnRestore">恢复上次会话</button>

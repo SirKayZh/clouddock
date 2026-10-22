@@ -42,7 +42,7 @@ const KEY_SERVICE = 'com.clouddock.credentials.v1';
 const LEGACY_KEY_SERVICE = 'CloudDock Credential Key';
 const KEY_ACCOUNT = 'clouddock';
 /** 测试钩子：替换 security 二进制路径（仅 vitest 使用，生产环境恒为系统 security） */
-const SECURITY_BIN = process.env.CLOUDDOCK_VAULT_SECURITY_BIN ?? '/usr/bin/security';
+const SECURITY_BIN = process.env.WORKPIER_VAULT_SECURITY_BIN ?? '/usr/bin/security';
 const MAX_ENTRIES_PER_ACCOUNT = 500;
 
 let userDataDir = '';

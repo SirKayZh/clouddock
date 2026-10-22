@@ -1,4 +1,4 @@
-# CloudDock — 多账号浏览器
+# WorkPier — 网页工作台
 
 像 Chrome 一样浏览任意网站（腾讯云、阿里云、AWS、GitHub、Google……），但**每个账号一个独立会话**（Cookie/缓存隔离）：同一个网站可以同时登录多个不同账号，各自登录一次长期保持，侧边栏点击秒级切换，无需退出重登。
 
@@ -45,7 +45,7 @@
 - **账号隔离**：密码跟随「账号」，账号 B 看不到账号 A 保存的密码；删除账号时一并清除。
 - **只填同一网站**：按 origin（协议+域名+端口）精确匹配，`localhost` 与 `127.0.0.1` 视为不同网站。
 - **管理**：菜单栏「密码」→ 列出当前账号已保存的密码（点击即删除）、恢复「从不保存」的网站、清除全部。主界面不占位。
-- **安全**：密码用 AES-256-GCM 加密，随机主密钥存在登录钥匙串（条目名 `com.clouddock.credentials.v1`，经系统自带 `/usr/bin/security` 读写），磁盘只存密文（`credentials.json`，权限 600）。**加解密全部在独立的 utilityProcess 子进程内完成**——主密钥与明文永远不进主进程内存（Chrome helper 最小权限进程模型的移植）。不使用 Electron safeStorage，因此**不会弹钥匙串授权框**，应用更新/重新签名也不受影响。钥匙串/子进程不可用时密码功能整体禁用，绝不明文落盘；密码不会传给界面进程，也读不到网页内脚本。（旧版 v1.2~v1.5 用 safeStorage 保存的密码无法迁移，需重新保存；v1.5 的钥匙串条目 `CloudDock Credential Key` 会自动迁移到新条目名，密码无需重录。）
+- **安全**：密码用 AES-256-GCM 加密，随机主密钥存在登录钥匙串（条目名 `com.clouddock.credentials.v1`（v1.x 历史命名，保留以维持老密码库可解密），经系统自带 `/usr/bin/security` 读写），磁盘只存密文（`credentials.json`，权限 600）。**加解密全部在独立的 utilityProcess 子进程内完成**——主密钥与明文永远不进主进程内存（Chrome helper 最小权限进程模型的移植）。不使用 Electron safeStorage，因此**不会弹钥匙串授权框**，应用更新/重新签名也不受影响。钥匙串/子进程不可用时密码功能整体禁用，绝不明文落盘；密码不会传给界面进程，也读不到网页内脚本。（旧版 v1.2~v1.5 用 safeStorage 保存的密码无法迁移，需重新保存；v1.5 的钥匙串条目 `CloudDock Credential Key` 会自动迁移到新条目名，密码无需重录。）
 
 ## 稳定性与性能（Chrome 设计移植，v1.6.0）
 
@@ -54,13 +54,13 @@
 | 崩溃收集 | Chromium 内建 crashpad 落 minidump 到本地（不上传），启动时自动只保留最近 5 份 |
 | 崩溃恢复横幅 | 上次崩溃/强杀后启动，顶部出现内嵌横幅「恢复上次会话 / 重新开始」，登录态不受影响；正常退出仍自动恢复 |
 | 空闲预热 | 启动 15 秒后空闲时段为各账号预建隐藏渲染进程 + 预连首页（DNS+TCP+TLS，上限 4 个），侧边栏切换秒开（Chrome Aperitif 思路） |
-| 自更新 | 「帮助 ▸ 检查更新…」：校验 SHA-256 → 原子切换 → 新版本启动握手，握手超时自动回滚；磁盘始终保留上一版（`CloudDock.app.previous`） |
+| 自更新 | 「帮助 ▸ 检查更新…」：校验 SHA-256 → 原子切换 → 新版本启动握手，握手超时自动回滚；磁盘始终保留上一版（`WorkPier.app.previous`） |
 
 ### 更新包制作与分发
 
 ```bash
-npm run package        # 除 release/CloudDock.app 外，同时产出：
-#   release/CloudDock-<版本>-update.zip   更新包
+npm run package        # 除 release/WorkPier.app 外，同时产出：
+#   release/WorkPier-<版本>-update.zip   更新包
 #   release/update.json                   清单（version / zip / sha256）
 ```
 
@@ -68,10 +68,12 @@ npm run package        # 除 release/CloudDock.app 外，同时产出：
 
 ## 数据位置（macOS）
 
-- 账号列表：`~/Library/Application Support/CloudDock/accounts.json`
-- 已保存密码（密文）：`~/Library/Application Support/CloudDock/credentials.json`
-- 各账号会话数据：`~/Library/Application Support/CloudDock/Partitions/clouddock-<id>/`
-- 彻底重置：退出 App 后删除上述 `CloudDock` 目录
+- 账号列表：`~/Library/Application Support/WorkPier/accounts.json`
+- 已保存密码（密文）：`~/Library/Application Support/WorkPier/credentials.json`
+- 各账号会话数据：`~/Library/Application Support/WorkPier/Partitions/clouddock-<id>/`（partition 前缀为 v1.x 历史命名，保留以维持老账号会话不失效）
+- 彻底重置：退出 App 后删除上述 `WorkPier` 目录
+
+**v2.0 改名说明**：应用由 CloudDock 更名为 WorkPier。v2.0 首次启动时自动把整个 `~/Library/Application Support/CloudDock` 目录迁移为 `WorkPier`（同盘 rename，秒级），账号、密码库、各网站登录态全部保留，无需任何手动操作；若迁移失败数据仍留在原目录，下次启动自动重试。
 
 ## 开发
 
@@ -83,15 +85,15 @@ npm start            # 开发运行
 npm run package      # 打包 macOS arm64 .app 到 release/（手动组装，绕过安全策略对 electron-packager 的拦截）
 ```
 
-打包脚本：`scripts/package.sh`（临时目录组装 + ad-hoc 签名，输出 `release/CloudDock.app`）。
-安装：`cp -R release/CloudDock.app ~/Applications/ && open ~/Applications/CloudDock.app`
+打包脚本：`scripts/package.sh`（临时目录组装 + ad-hoc 签名，输出 `release/WorkPier.app`）。
+安装：`cp -R release/WorkPier.app ~/Applications/ && open ~/Applications/WorkPier.app`
 
-测试用隔离数据目录：`CLOUDDOCK_DATA_DIR=/tmp/clouddock-test npm start`
+测试用隔离数据目录：`WORKPIER_DATA_DIR=/tmp/workpier-test npm start`
 
 ## 原理
 
 - 主窗口加载本地 UI（侧边栏 + 工具栏），每个账号页面是一个 `WebContentsView`
-- 每个账号使用 `session.fromPartition('persist:clouddock-<id>')`，获得独立的 Cookie jar / 缓存 / 存储
+- 每个账号使用 `session.fromPartition('persist:clouddock-<id>')（前缀为 v1.x 历史命名，保留以维持老账号会话不失效）`，获得独立的 Cookie jar / 缓存 / 存储
 - 已打开账号的 View 常驻（隐藏），切换 = 显示/隐藏，不销毁会话
 - `target=_blank` / `window.open` 在**同一账号内**新开标签页（共享登录态），不会丢到系统浏览器
 - 每个标签页（含 iframe）注入 `pagePreload`（隔离世界 + sandbox）：捕获登录表单、自动填充；与主进程通过 IPC 通信，主进程校验发送方

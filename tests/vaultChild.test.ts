@@ -1,6 +1,6 @@
 /*
  * vaultChild 回归测试：不启动 Electron，用 fake parentPort 直接驱动 src/vaultChild.ts；
- * /usr/bin/security 替换为 tmp 下的 bash 替身（CLOUDDOCK_VAULT_SECURITY_BIN 注入），
+ * /usr/bin/security 替换为 tmp 下的 bash 替身（WORKPIER_VAULT_SECURITY_BIN 注入），
  * 绝不触碰真实登录钥匙串。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,9 +14,9 @@ interface VaultReply {
   result: Record<string, unknown>;
 }
 
-/** security 替身：条目按服务名存到 $CLOUDDOCK_FAKE_KC_DIR（与真实 security 的 -s/-a/-w/-U 参数面兼容） */
+/** security 替身：条目按服务名存到 $WORKPIER_FAKE_KC_DIR（与真实 security 的 -s/-a/-w/-U 参数面兼容） */
 const FAKE_SECURITY = `#!/bin/bash
-DIR="\${CLOUDDOCK_FAKE_KC_DIR:?}"
+DIR="\${WORKPIER_FAKE_KC_DIR:?}"
 op="$1"; shift
 svc=""; val=""
 # 注意：find 的 -w 是无值标志（输出密码），add 的 -w 才带密钥值——两种都要兼容
@@ -42,8 +42,8 @@ esac
 async function loadVault(kcDir: string): Promise<{ ask: (op: string, extra?: Record<string, unknown>) => Promise<Record<string, any>> }> {
   const bin = path.join(kcDir, 'fake-security');
   fs.writeFileSync(bin, FAKE_SECURITY, { mode: 0o755 });
-  process.env.CLOUDDOCK_VAULT_SECURITY_BIN = bin;
-  process.env.CLOUDDOCK_FAKE_KC_DIR = kcDir;
+  process.env.WORKPIER_VAULT_SECURITY_BIN = bin;
+  process.env.WORKPIER_FAKE_KC_DIR = kcDir;
 
   const port = new EventEmitter();
   (process as unknown as { parentPort: unknown }).parentPort = {
@@ -88,8 +88,8 @@ describe('vaultChild（fake security 驱动，不碰真实钥匙串）', () => {
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(kcDir, { recursive: true, force: true });
-    delete process.env.CLOUDDOCK_VAULT_SECURITY_BIN;
-    delete process.env.CLOUDDOCK_FAKE_KC_DIR;
+    delete process.env.WORKPIER_VAULT_SECURITY_BIN;
+    delete process.env.WORKPIER_FAKE_KC_DIR;
   });
 
   it('init + save + decrypt 往返', async () => {

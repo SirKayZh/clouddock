@@ -93,7 +93,7 @@ export class Vault {
         this.exited = true;
         this._available = false;
         this._initFailed = true;
-        console.error(`[clouddock] vault child exited (code=${code}), password saving/filling disabled`);
+        console.error(`[workpier] vault child exited (code=${code}), password saving/filling disabled`);
       });
       // init 含首次钥匙串创建/迁移（可能触发用户授权），超时放宽到 60s
       const res = (await this.request('init', { ...this.initArgs }, 60_000)) as
@@ -105,7 +105,7 @@ export class Vault {
       }
       if (!this.available) this._initFailed = true;
     } catch (err) {
-      console.error('[clouddock] vault child failed to start:', err);
+      console.error('[workpier] vault child failed to start:', err);
       this._available = false;
       this._initFailed = true;
     }

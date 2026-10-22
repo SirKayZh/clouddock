@@ -82,7 +82,7 @@
     // 输入解析走主进程（与地址栏同一套 resolveInput 规则），本地不再放拷贝
     document.getElementById('f').addEventListener('submit', function (e) {
       e.preventDefault();
-      var api = window.clouddockStart;
+      var api = window.workpierStart;
       if (api) api.open(document.getElementById('q').value);
     });
   </script>

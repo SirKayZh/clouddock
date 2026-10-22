@@ -210,6 +210,6 @@ else start();
  * 统一走主进程 resolveInput。主进程侧只对「停在起始页的已登记 tab」放行，
  * 普通网站页面即使发现这个 API 也只会得到 false。
  */
-contextBridge.exposeInMainWorld('clouddockStart', {
+contextBridge.exposeInMainWorld('workpierStart', {
   open: (raw: string): Promise<boolean> => ipcRenderer.invoke('nav:start-input', raw),
 });
