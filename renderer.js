@@ -55,11 +55,12 @@ async function selectAccount(id) {
 }
 
 function render() {
+  // collapsed class 必须先于 renderBerths 应用：限高（max-height）生效后 scrollIntoView 才有滚动语义
+  document.body.classList.toggle('collapsed', !!state.sidebarCollapsed);
   renderToolbar();
   renderTabbar();
   renderBanner();
   renderBerths();
-  document.body.classList.toggle('collapsed', !!state.sidebarCollapsed);
   if (!editing) renderList();
   const emptyVisible = state.accounts.length === 0;
   els.empty.style.display = emptyVisible ? 'flex' : 'none';
@@ -99,9 +100,10 @@ function renderBerths() {
     scroll.appendChild(chip);
   });
   els.berthBar.appendChild(scroll);
-  // 选中工作区自动滚入视野（工作区多时切换不用手动找）
+  // 选中工作区自动滚入视野（工作区多时切换不用手动找）；
+  // rAF 等 collapsed 限高布局稳定后再滚，避免布局未定时空转
   const active = scroll.querySelector('.berth-chip.active');
-  if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (active) requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
   const add = document.createElement('button');
   add.className = 'berth-add';
   add.title = '新建工作区';
