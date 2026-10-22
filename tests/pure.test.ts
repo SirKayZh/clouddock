@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_BERTH_ID,
   PALETTE,
+  berthOfAccount,
   homeFor,
   hostnameOf,
   isHttpUrl,
   registrableDomain,
   resolveInput,
   sanitizeAccount,
+  sanitizeBerth,
   siteLabel,
 } from '../src/pure';
 
@@ -182,5 +185,65 @@ describe('isNewerVersion（语义化版本比较）', () => {
   it('段数不齐时缺省按 0 补', () => {
     expect(isNewerVersion('1.6', '1.5.9')).toBe(true);
     expect(isNewerVersion('1.5.0.1', '1.5.0')).toBe(true);
+  });
+});
+
+describe('sanitizeBerth（工作区数据校验，v2.0）', () => {
+  it('合法数据往返', () => {
+    const b = sanitizeBerth({ id: 'wiki', name: ' iWiki ', icon: '📚', createdAt: 123 });
+    expect(b).toEqual({ id: 'wiki', name: 'iWiki', icon: '📚', createdAt: 123 });
+  });
+
+  it('缺省字段兜底：icon 默认 ⚓️、createdAt 默认现在', () => {
+    const b = sanitizeBerth({ id: 'docs', name: '企微文档' });
+    expect(b?.icon).toBe('⚓️');
+    expect(typeof b?.createdAt).toBe('number');
+  });
+
+  it('名称超长截断到 12 字符', () => {
+    const b = sanitizeBerth({ id: 'x', name: '一二三四五六七八九十一二三四五' });
+    expect(b?.name).toHaveLength(12);
+  });
+
+  it('结构不合法整体拒绝', () => {
+    expect(sanitizeBerth(null)).toBeNull();
+    expect(sanitizeBerth('x')).toBeNull();
+    expect(sanitizeBerth({ id: '', name: 'x' })).toBeNull(); // 空 id
+    expect(sanitizeBerth({ id: 'a b', name: 'x' })).toBeNull(); // id 含空格（不匹配 \w）
+    expect(sanitizeBerth({ id: 'x', name: '' })).toBeNull();
+    expect(sanitizeBerth({ id: 'x', name: '   ' })).toBeNull();
+  });
+});
+
+describe('berthOfAccount（账号归区判定，v2.0）', () => {
+  const acc = (berthId?: string) => ({ id: 'a1', name: 'n', note: '', color: '#000000', createdAt: 0, berthId, tabs: [], activeTabId: null });
+
+  it('无 berthId（v2.0 前老数据）归默认区', () => {
+    expect(berthOfAccount(acc())).toBe(DEFAULT_BERTH_ID);
+  });
+
+  it('有 berthId 且工作区存在 → 该区', () => {
+    expect(berthOfAccount(acc('wiki'), new Set(['wiki', DEFAULT_BERTH_ID]))).toBe('wiki');
+  });
+
+  it('berthId 指向已删工作区 → 归默认区（工作区删除后账号自动回巢）', () => {
+    expect(berthOfAccount(acc('gone'), new Set([DEFAULT_BERTH_ID]))).toBe(DEFAULT_BERTH_ID);
+  });
+
+  it('不传工作区集合时不做存在性校验（内部口径）', () => {
+    expect(berthOfAccount(acc('anything'))).toBe('anything');
+  });
+});
+
+describe('sanitizeAccount 透传 berthId（v2.0）', () => {
+  it('合法 berthId 保留', () => {
+    const a = sanitizeAccount({ id: 'a1', name: 'n', berthId: 'wiki', tabs: [] });
+    expect(a?.berthId).toBe('wiki');
+  });
+
+  it('非法/缺失 berthId 置空（归默认区由 berthOfAccount 兜底）', () => {
+    expect(sanitizeAccount({ id: 'a1', name: 'n', berthId: '', tabs: [] })?.berthId).toBeUndefined();
+    expect(sanitizeAccount({ id: 'a1', name: 'n', berthId: 123, tabs: [] })?.berthId).toBeUndefined();
+    expect(sanitizeAccount({ id: 'a1', name: 'n', tabs: [] })?.berthId).toBeUndefined();
   });
 });

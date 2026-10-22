@@ -16,9 +16,12 @@ import * as fs from 'node:fs';
 import * as dns from 'node:dns';
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import type { Account, AppState, CapturedLogin, FillPayload, PendingSave, Tab } from './types';
+import type { Account, AppState, Berth, CapturedLogin, FillPayload, PendingSave, Tab } from './types';
 import {
   PALETTE,
+  DEFAULT_BERTH_ID,
+  berthOfAccount,
+  sanitizeBerth,
   hostnameOf,
   registrableDomain,
   siteLabel,
@@ -60,6 +63,58 @@ let win: BrowserWindow | null = null;
 const views = new Map<string, WebContentsView>();
 let accounts: Account[] = [];
 let activeId: string | null = null;
+
+/* ---------- 工作区（Berth） ---------- */
+
+let berths: Berth[] = [];
+let activeBerthId = DEFAULT_BERTH_ID;
+/** 每个工作区记住上次活跃的账号：切回工作区时直接落回（不总是第一个） */
+let berthActive: Record<string, string> = {};
+
+function berthsFile(): string {
+  return path.join(app.getPath('userData'), 'berths.json');
+}
+
+/** 当前工作区的 id 集合（判定 berthId 有效性：已删工作区的账号归默认区） */
+function berthIds(): Set<string> {
+  return new Set(berths.map((b) => b.id));
+}
+
+/** 当前工作区可见账号（sendState / ⌘1-9 / 菜单 / 预热的统一口径） */
+function visibleAccounts(): Account[] {
+  const ids = berthIds();
+  return accounts.filter((a) => berthOfAccount(a, ids) === activeBerthId);
+}
+
+function saveBerthsNow(): void {
+  try {
+    const file = berthsFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeFileAtomic(file, JSON.stringify(berths, null, 2));
+  } catch (err) {
+    console.error('[workpier] save berths failed:', err);
+  }
+}
+
+function loadBerths(): void {
+  let loaded: Berth[] = [];
+  try {
+    const data: unknown = JSON.parse(fs.readFileSync(berthsFile(), 'utf-8'));
+    if (Array.isArray(data)) loaded = data.map(sanitizeBerth).filter((b): b is Berth => b !== null);
+  } catch {
+    /* 首次运行无文件 */
+  }
+  // 默认区永远在列（老账号的归宿）；磁盘数据缺失/损坏时重建
+  const fresh = !loaded.some((b) => b.id === DEFAULT_BERTH_ID);
+  if (fresh) {
+    loaded.unshift({ id: DEFAULT_BERTH_ID, name: '云账号', icon: '☁️', createdAt: 0 });
+  }
+  berths = loaded;
+  const ids = berthIds();
+  if (!ids.has(activeBerthId)) activeBerthId = DEFAULT_BERTH_ID;
+  // 首启/损坏重建后立即落盘：berths.json 从第一次运行起就存在（否则不动工作区就永远不生成）
+  if (fresh || !fs.existsSync(berthsFile())) saveBerthsNow();
+}
 
 /* ---------- 测试支持：自定义数据目录 ---------- */
 if (process.env.WORKPIER_DATA_DIR) {
@@ -166,7 +221,7 @@ function saveUiNow(): void {
     const file = uiFile();
     fs.mkdirSync(path.dirname(file), { recursive: true });
     // activeId 为空时沿用已读到的上次值，避免只切侧边栏就丢了「上次账号」
-    writeFileAtomic(file, JSON.stringify({ activeId: activeId ?? savedActiveId, sidebarCollapsed }));
+    writeFileAtomic(file, JSON.stringify({ activeId: activeId ?? savedActiveId, sidebarCollapsed, activeBerthId, berthActive }));
   } catch (err) {
     console.error('[workpier] save ui failed:', err);
   }
@@ -222,6 +277,14 @@ function loadAccounts(): void {
     const id = (ui as { activeId?: unknown }).activeId;
     savedActiveId = typeof id === 'string' ? id : null;
     sidebarCollapsed = (ui as { sidebarCollapsed?: unknown }).sidebarCollapsed === true;
+    const berth = (ui as { activeBerthId?: unknown }).activeBerthId;
+    if (typeof berth === 'string' && berth.length > 0) activeBerthId = berth;
+    const mem = (ui as { berthActive?: unknown }).berthActive;
+    if (mem && typeof mem === 'object' && !Array.isArray(mem)) {
+      for (const [k, v] of Object.entries(mem as Record<string, unknown>)) {
+        if (typeof v === 'string') berthActive[k] = v;
+      }
+    }
   } catch {
     savedActiveId = null;
   }
@@ -707,7 +770,9 @@ function sendState(): void {
   const tab = activeTab();
   const wc = tab ? views.get(tab.id)?.webContents : undefined;
   const state: AppState = {
-    accounts,
+    accounts: visibleAccounts(),
+    berths,
+    activeBerthId,
     activeId,
     activeTabId: tab?.id ?? null,
     url: wc ? (isHttpUrl(wc.getURL()) ? wc.getURL() : '') : tab?.url ?? '',
@@ -842,12 +907,12 @@ function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView
     Menu.buildFromTemplate(items).popup({ window: win, x: b.x + params.x, y: b.y + params.y });
   });
 
-  // ⌘1~⌘9 切换账号（仅拦截数字键，其余交给应用菜单）
+  // ⌘1~⌘9 切换账号（仅当前工作区内的序号；其余按键交给应用菜单）
   wc.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || !input.meta) return;
     const m = /^Digit([1-9])$/.exec(input.code);
     if (m) {
-      const target = accounts[Number(m[1]) - 1];
+      const target = visibleAccounts()[Number(m[1]) - 1];
       if (target) {
         event.preventDefault();
         switchAccount(target.id);
@@ -1020,6 +1085,30 @@ function switchAccount(id: string): boolean {
   // 切换后为新活跃账号补 spare（延迟执行，不与切换导航抢资源）
   schedulePrewarm(5_000);
   return switchTab(tabId);
+}
+
+/**
+ * 切换工作区：记住当前区活跃账号 → 换区 → 落到该区上次活跃账号（或第一个）。
+ * 账号/视图不销毁（与切换账号同语义：隐藏不关闭），各工作区登录态、标签页原地保留。
+ */
+function switchBerth(id: string): boolean {
+  if (!berths.some((b) => b.id === id)) return false;
+  if (id === activeBerthId) return true;
+  // 记住当前区的活跃账号（切回时直接落回）
+  if (activeId) berthActive[activeBerthId] = activeId;
+  activeBerthId = id;
+  const vis = visibleAccounts();
+  const target = vis.find((a) => a.id === berthActive[id]) ?? vis[0] ?? null;
+  if (target) {
+    switchAccount(target.id);
+  } else {
+    // 空工作区：不显示任何账号（empty 状态），已有视图保持隐藏
+    activeId = null;
+    sendState();
+  }
+  saveUiNow();
+  schedulePrewarm(3_000);
+  return true;
 }
 
 /* ---------- 标签页操作 ---------- */
@@ -1290,9 +1379,10 @@ async function removeAccount(id: string): Promise<boolean> {
   // 先切走并刷新 UI，再清理数据：清理可能耗时，避免界面卡在已删除账号上
   if (activeId === id) {
     activeId = null;
-    if (accounts.length > 0) {
-      ensureAccountTabs(accounts[0]);
-      const tabId = accounts[0].activeTabId;
+    const vis = visibleAccounts();
+    if (vis.length > 0) {
+      ensureAccountTabs(vis[0]);
+      const tabId = vis[0].activeTabId;
       if (tabId) switchTab(tabId);
     } else {
       win?.webContents.focus();
@@ -1324,8 +1414,10 @@ async function removeAccount(id: string): Promise<boolean> {
 let prewarmTimer: NodeJS.Timeout | null = null;
 function prewarmViews(): void {
   if (!win || win.isDestroyed()) return;
+  // 只预热当前工作区：其余区的会话在磁盘上（persist partition），切区时自然恢复
+  const vis = visibleAccounts();
   let made = 0;
-  for (const acc of accounts) {
+  for (const acc of vis) {
     if (made >= PREWARM_MAX) break;
     if (!acc.home || !isHttpUrl(acc.home)) continue;
     ensureAccountTabs(acc);
@@ -1338,7 +1430,7 @@ function prewarmViews(): void {
   // 活跃账号的 spare：新建标签页（⌘T / 链接新开）零冷启动
   const active = activeAccount();
   if (active) makeSpareView(active);
-  for (const acc of accounts) {
+  for (const acc of vis) {
     if (!acc.home || !isHttpUrl(acc.home)) continue;
     try {
       void dns.promises.lookup(new URL(acc.home).hostname, { all: true }).catch(() => {
@@ -1382,8 +1474,9 @@ function resolveCrash(restore: boolean): void {
     saveAccountsNow();
   }
   // 无论恢复与否都落到上次账号上：恢复=打开上次的标签页；不恢复=该账号干净的起始页
-  if (accounts.length > 0) {
-    const target = accounts.find((a) => a.id === savedActiveId) ?? accounts[0];
+  const vis = visibleAccounts();
+  if (vis.length > 0) {
+    const target = vis.find((a) => a.id === savedActiveId) ?? vis[0];
     switchAccount(target.id);
   } else {
     sendState();
@@ -1393,8 +1486,31 @@ function resolveCrash(restore: boolean): void {
 
 /* ---------- IPC ---------- */
 
+/** 删除工作区：账号不删（soft-delete 原则），区内账号全部挪回默认区 */
+function removeBerth(bid: string): boolean {
+  if (bid === DEFAULT_BERTH_ID) return false; // 默认区不可删（老账号的归宿）
+  const b = berths.find((x) => x.id === bid);
+  if (!b) return false;
+  for (const a of accounts) {
+    if (berthOfAccount(a) === bid) a.berthId = DEFAULT_BERTH_ID;
+  }
+  berths = berths.filter((x) => x.id !== bid);
+  delete berthActive[bid];
+  saveBerthsNow();
+  if (activeBerthId === bid) switchBerth(DEFAULT_BERTH_ID);
+  scheduleSave();
+  sendState();
+  return true;
+}
+
+/** 菜单「重命名工作区」→ 通知渲染层在 chip 上内联编辑 */
+function requestBerthRename(id: string): void {
+  win?.webContents.send('berth:rename-start', id);
+}
+
 function registerIpc(): void {
-  ipcMain.handle('accounts:list', () => accounts);
+  // 当前工作区的账号（工作区过滤后的视图；主进程是唯一过滤口径）
+  ipcMain.handle('accounts:list', () => visibleAccounts());
 
   ipcMain.handle('accounts:add', (_e, name: unknown, note: unknown): Account => {
     // 无需手动输入：新建独立会话并打开起始页，选站点登录后自动命名
@@ -1409,6 +1525,7 @@ function registerIpc(): void {
       color: pickColor(),
       createdAt: Date.now(),
       autoName: !manualName,
+      berthId: activeBerthId, // 新账号归当前工作区
       tabs: [loginTab],
       activeTabId: loginTab.id,
     };
@@ -1434,6 +1551,69 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('accounts:switch', (_e, id: unknown): boolean => switchAccount(String(id)));
+
+  /* ---------- 工作区（Berth）IPC ---------- */
+
+  ipcMain.handle('berths:list', (): Berth[] => berths);
+
+  ipcMain.handle('berths:add', (_e, name: unknown, icon: unknown): Berth | null => {
+    const n = String(name ?? '').trim().slice(0, 12);
+    if (!n) return null;
+    const b: Berth = {
+      id: randomBytes(4).toString('hex'),
+      name: n,
+      icon: typeof icon === 'string' && icon.length > 0 && icon.length <= 16 ? icon : '⚓️',
+      createdAt: Date.now(),
+    };
+    berths.push(b);
+    saveBerthsNow();
+    switchBerth(b.id); // 新建即切入，符合「为这件事开一个区」的心智
+    return b;
+  });
+
+  ipcMain.handle('berths:rename', (_e, id: unknown, name: unknown): boolean => {
+    const b = berths.find((x) => x.id === String(id));
+    if (!b) return false;
+    const n = String(name ?? '').trim().slice(0, 12);
+    if (!n) return false;
+    b.name = n;
+    saveBerthsNow();
+    sendState();
+    return true;
+  });
+
+  ipcMain.handle('berths:remove', (_e, id: unknown): boolean => removeBerth(String(id)));
+
+  ipcMain.handle('berths:switch', (_e, id: unknown): boolean => switchBerth(String(id)));
+
+  // 工作区右键菜单：重命名 / 删除
+  ipcMain.handle('berths:menu', (_e, id: unknown): void => {
+    const b = berths.find((x) => x.id === String(id));
+    if (!b || !win) return;
+    const isDefault = b.id === DEFAULT_BERTH_ID;
+    Menu.buildFromTemplate([
+      { label: `重命名「${b.name}」`, enabled: !isDefault, click: () => requestBerthRename(b.id) },
+      { type: 'separator' },
+      {
+        label: `删除工作区「${b.name}」…`,
+        enabled: !isDefault,
+        click: () => {
+          void dialog
+            .showMessageBox(win!, {
+              type: 'warning',
+              buttons: ['删除', '取消'],
+              defaultId: 1,
+              cancelId: 1,
+              message: `删除工作区「${b.name}」？`,
+              detail: '工作区内的账号不会被删除，全部移回「云账号」工作区，登录态保留。',
+            })
+            .then((choice) => {
+              if (choice.response === 0) removeBerth(b.id);
+            });
+        },
+      },
+    ]).popup({ window: win });
+  });
 
   // 侧边栏：收起 / 展开（不传参数 = 切换）
   ipcMain.handle('ui:sidebar', (_e, collapsed: unknown): boolean => {
@@ -1683,6 +1863,8 @@ function menuSignature(): string {
     activeId,
     activeAccount()?.name,
     accounts.length,
+    activeBerthId,
+    visibleAccounts().length,
     vault.available,
     vault.initFailed,
     vault.entries.filter((e) => e.accountId === activeId).map((e) => [e.id, e.origin, e.label]),
@@ -1734,7 +1916,7 @@ function buildMenu(): void {
           label: '新建标签页',
           accelerator: 'CmdOrCtrl+T',
           click: () => {
-            const acc = activeAccount() ?? accounts[0];
+            const acc = activeAccount() ?? visibleAccounts()[0];
             if (acc) newTabForAccount(acc);
           },
         },
@@ -1835,8 +2017,10 @@ function createWindow(): void {
     }
     if (activeId === null && accounts.length > 0) {
       // 直接恢复上次使用的账号，避免先白白加载第一个账号再切换
-      const target = accounts.find((a) => a.id === savedActiveId) ?? accounts[0];
-      switchAccount(target.id);
+      const vis = visibleAccounts();
+      const target = vis.find((a) => a.id === savedActiveId) ?? vis[0];
+      if (target) switchAccount(target.id);
+      else sendState();
     } else {
       sendState();
     }
@@ -1882,6 +2066,7 @@ if (!gotLock) {
     pruneCrashDumps();
 
     loadAccounts();
+    loadBerths();
     // 上次异常退出 → 恢复横幅；正常退出 → 直接恢复上次会话（原行为）
     crashRecoveryPending = crashedLastRun && accounts.length > 0;
 

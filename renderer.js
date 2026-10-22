@@ -2,6 +2,7 @@
 
 const els = {
   list: document.getElementById('accountList'),
+  berthBar: document.getElementById('berthBar'),
   empty: document.getElementById('empty'),
   back: document.getElementById('navBack'),
   fwd: document.getElementById('navFwd'),
@@ -19,6 +20,8 @@ const els = {
 
 let state = {
   accounts: [],
+  berths: [],
+  activeBerthId: 'cloud',
   activeId: null,
   activeTabId: null,
   url: '',
@@ -55,10 +58,136 @@ function render() {
   renderToolbar();
   renderTabbar();
   renderBanner();
+  renderBerths();
   document.body.classList.toggle('collapsed', !!state.sidebarCollapsed);
   if (!editing) renderList();
-  els.empty.style.display = state.accounts.length === 0 ? 'flex' : 'none';
+  const emptyVisible = state.accounts.length === 0;
+  els.empty.style.display = emptyVisible ? 'flex' : 'none';
+  if (emptyVisible) {
+    // 空态文案跟随当前工作区
+    const berth = state.berths.find((b) => b.id === state.activeBerthId);
+    const h1 = els.empty.querySelector('h1');
+    if (berth && h1) h1.textContent = `${berth.icon} ${berth.name}`;
+  }
 }
+
+/* ---------- 工作区（Berth）chips ---------- */
+
+let berthSig = '';
+
+function renderBerths() {
+  const sig = JSON.stringify([state.activeBerthId, state.berths.map((b) => [b.id, b.name, b.icon])]);
+  if (sig === berthSig && els.berthBar.childElementCount > 0) return;
+  berthSig = sig;
+  els.berthBar.innerHTML = '';
+  state.berths.forEach((b) => {
+    const chip = document.createElement('button');
+    chip.className = 'berth-chip' + (b.id === state.activeBerthId ? ' active' : '');
+    chip.title = b.name;
+    chip.innerHTML = `<span>${escapeHtml(b.icon)}</span><span class="berth-name">${escapeHtml(b.name)}</span>`;
+    chip.addEventListener('click', () => {
+      if (editing) return;
+      window.api.berthSwitch(b.id);
+    });
+    chip.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      window.api.berthMenu(b.id);
+    });
+    els.berthBar.appendChild(chip);
+  });
+  const add = document.createElement('button');
+  add.className = 'berth-add';
+  add.title = '新建工作区';
+  add.textContent = '＋';
+  add.addEventListener('click', () => startBerthCreate());
+  els.berthBar.appendChild(add);
+}
+
+/** 内联新建工作区：＋ 变输入框，Enter 确认（风格与账号重命名一致） */
+function startBerthCreate() {
+  if (editing) return;
+  const addBtn = els.berthBar.querySelector('.berth-add');
+  if (!addBtn) return;
+  editing = true;
+  const input = document.createElement('input');
+  input.className = 'berth-new-input';
+  input.maxLength = 12;
+  input.placeholder = '工作区名称';
+  input.setAttribute('spellcheck', 'false');
+  addBtn.replaceWith(input);
+  let closed = false;
+  let composing = false;
+  const done = async (save) => {
+    if (closed) return;
+    closed = true;
+    editing = false;
+    const v = input.value.trim();
+    if (input.isConnected) input.replaceWith(addBtn);
+    berthSig = ''; // 强制刷新
+    render();
+    if (save && v) await window.api.berthAdd(v);
+  };
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; });
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (composing || e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') done(true);
+    if (e.key === 'Escape') done(false);
+  });
+  input.addEventListener('blur', () => {
+    if (composing) return;
+    done(true);
+  });
+  window.api.focusUi();
+  input.focus();
+}
+
+/** 菜单「重命名工作区」→ 在对应 chip 上内联编辑 */
+window.api.onBerthRenameStart((id) => {
+  const b = state.berths.find((x) => x.id === id);
+  if (!b || editing) return;
+  const chips = els.berthBar.querySelectorAll('.berth-chip');
+  const chip = Array.from(chips).find((c) => c.querySelector('.berth-name')?.textContent === b.name || c.title === b.name);
+  if (!chip) return;
+  editing = true;
+  const nameEl = chip.querySelector('.berth-name');
+  const input = document.createElement('input');
+  input.className = 'berth-new-input';
+  input.value = b.name;
+  input.maxLength = 12;
+  input.setAttribute('spellcheck', 'false');
+  nameEl.replaceWith(input);
+  chip.classList.add('renaming');
+  let closed = false;
+  let composing = false;
+  const done = async (save) => {
+    if (closed) return;
+    closed = true;
+    editing = false;
+    const v = input.value.trim();
+    chip.classList.remove('renaming');
+    if (input.isConnected) input.replaceWith(nameEl);
+    berthSig = '';
+    render();
+    if (save && v && v !== b.name) await window.api.berthRename(b.id, v);
+  };
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; });
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (composing || e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') done(true);
+    if (e.key === 'Escape') done(false);
+  });
+  input.addEventListener('blur', () => {
+    if (composing) return;
+    done(true);
+  });
+  window.api.focusUi();
+  input.focus();
+  input.select();
+});
 
 let tabSig = '';
 

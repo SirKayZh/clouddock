@@ -45,6 +45,37 @@
     .sb-list { flex: 1; overflow-y: auto; padding: 6px; }
     .sb-footer { flex: none; padding: 10px; border-top: 1px solid var(--rail-line); }
 
+    /* 工作区（Berth）chips：内嵌横向条，位于品牌区与账号列表之间 */
+    .sb-berths {
+      flex: none; display: flex; align-items: center; gap: 6px;
+      padding: 0 10px 10px; flex-wrap: wrap;
+      -webkit-app-region: no-drag;
+    }
+    .berth-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      height: 26px; padding: 0 10px; border-radius: 13px;
+      border: 1px solid var(--rail-line); background: #fff;
+      font-size: 12px; color: #44526B; cursor: pointer; user-select: none;
+      white-space: nowrap; max-width: 100%;
+    }
+    .berth-chip:hover { border-color: #B9C8E0; background: var(--rail-hover); }
+    .berth-chip.active {
+      background: var(--rail-sel); border-color: var(--blue); color: var(--blue);
+      font-weight: 600;
+    }
+    .berth-chip .berth-name { overflow: hidden; text-overflow: ellipsis; }
+    .berth-add {
+      width: 26px; height: 26px; flex: none; border-radius: 13px;
+      border: 1px dashed #B9C8E0; background: transparent;
+      color: #8296B5; font-size: 13px; line-height: 1; cursor: pointer;
+    }
+    .berth-add:hover { border-color: var(--blue); color: var(--blue); }
+    .berth-new-input {
+      height: 26px; padding: 0 10px; border-radius: 13px;
+      border: 1px solid var(--blue); outline: none;
+      font-size: 12px; width: 96px;
+    }
+
     .acc-item {
       display: flex; align-items: center; gap: 10px;
       height: 48px; padding: 0 10px; border-radius: 10px;
@@ -118,6 +149,11 @@
     body.collapsed .acc-item.active .acc-label { color: var(--blue); font-weight: 600; }
     body.collapsed .sb-list { padding: 6px 0; }
     body.collapsed .sb-footer { padding: 10px; }
+    /* 窄栏：工作区 chips 只显示图标，纵向排布 */
+    body.collapsed .sb-berths { flex-direction: column; align-items: center; padding: 0 0 10px; }
+    body.collapsed .berth-chip { width: 34px; height: 34px; padding: 0; border-radius: 10px; justify-content: center; font-size: 15px; }
+    body.collapsed .berth-chip .berth-name { display: none; }
+    body.collapsed .berth-add { width: 34px; height: 34px; border-radius: 10px; }
 
     .add-btn {
       width: 100%; height: 36px; border: none;
@@ -269,6 +305,7 @@
           <div class="sb-title">WorkPier<span>网页工作台</span></div>
         </div>
       </div>
+      <div id="berthBar" class="sb-berths"></div>
       <div id="accountList" class="sb-list"></div>
       <div id="sbFooter" class="sb-footer">
         <button id="btnAdd" class="add-btn" title="添加账号"><span class="add-full">＋ 添加账号</span><span class="add-mini">＋</span></button>

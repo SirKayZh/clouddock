@@ -10,6 +10,8 @@ export interface Account {
   note: string;
   color: string;
   createdAt: number;
+  /** 所在工作区（Berth）id；缺省/无效 = DEFAULT_BERTH_ID（云账号），v2.0 前的老数据自动归默认区 */
+  berthId?: string;
   /** true = 名称由登录结果自动识别（用户手动重命名后置 false，不再覆盖） */
   autoName?: boolean;
   /** 自动名称的来源，优先级 uin > login > host：host=站点域名，login=登录页输入的用户名，uin=腾讯云 UIN */
@@ -24,6 +26,15 @@ export interface Account {
   activeTabId: string | null;
 }
 
+/** 工作区（Berth）：同类型网页的聚合容器，如「云账号」「iWiki」「企微文档」 */
+export interface Berth {
+  id: string;
+  name: string;
+  /** emoji 图标，如 ☁️ */
+  icon: string;
+  createdAt: number;
+}
+
 /** 待用户确认的「保存密码」提示（不含密码） */
 export interface PendingSave {
   accountId: string;
@@ -36,7 +47,10 @@ export interface PendingSave {
 }
 
 export interface AppState {
+  /** 当前工作区内的账号（主进程已按 activeBerthId 过滤） */
   accounts: Account[];
+  berths: Berth[];
+  activeBerthId: string;
   activeId: string | null;
   activeTabId: string | null;
   url: string;

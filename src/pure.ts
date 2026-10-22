@@ -2,12 +2,36 @@
  * 纯函数模块：不依赖 electron / fs，可直接被 vitest 单测覆盖。
  * main.ts 与页面桥共用，保证解析/清洗规则只有一份实现。
  */
-import type { Account, Tab } from './types';
+import type { Account, Berth, Tab } from './types';
 
 export const PALETTE = [
   '#0052D9', '#00A870', '#ED7B2F', '#7B61FF',
   '#E3737B', '#029BE5', '#B58A00', '#2E7D32',
 ];
+
+/** 默认工作区：v2.0 前的全部老账号（无 berthId）自动归入 */
+export const DEFAULT_BERTH_ID = 'cloud';
+
+/** 账号所属工作区：berthId 缺省/无效（工作区已被删）= 默认区 */
+export function berthOfAccount(acc: Account, berthIds?: Set<string>): string {
+  const b = acc.berthId;
+  return b && (!berthIds || berthIds.has(b)) ? b : DEFAULT_BERTH_ID;
+}
+
+/** 磁盘读入的 Berth 结构/类型校验（berths.json） */
+export function sanitizeBerth(raw: unknown): Berth | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const b = raw as Partial<Berth>;
+  if (typeof b.id !== 'string' || !/^[\w-]{1,64}$/.test(b.id)) return null;
+  if (typeof b.name !== 'string' || b.name.trim().length === 0) return null;
+  return {
+    id: b.id,
+    name: b.name.trim().slice(0, 12),
+    // emoji 可能是多 code point（ZWJ 序列），不能 slice 粗暴截断；长度超限视为无效给默认值
+    icon: typeof b.icon === 'string' && b.icon.length > 0 && b.icon.length <= 16 ? b.icon : '⚓️',
+    createdAt: typeof b.createdAt === 'number' ? b.createdAt : Date.now(),
+  };
+}
 
 /** 常见站点的友好名称（后缀匹配），其余取注册域名 */
 const SITE_NAMES: Array<[string, string]> = [
@@ -100,6 +124,7 @@ export function sanitizeAccount(raw: unknown): Account | null {
     note: typeof a.note === 'string' ? a.note.slice(0, 60) : '',
     color: typeof a.color === 'string' && /^#[0-9a-f]{6}$/i.test(a.color) ? a.color : PALETTE[0],
     createdAt: typeof a.createdAt === 'number' ? a.createdAt : Date.now(),
+    berthId: typeof a.berthId === 'string' && a.berthId.length > 0 ? a.berthId : undefined,
     autoName: a.autoName === true,
     // 升级兼容：旧版已按 UIN 自动命名的账号标记为 uin 来源，避免被站点域名覆盖
     nameSource:
