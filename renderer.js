@@ -72,67 +72,95 @@ function render() {
   }
 }
 
-/* ---------- 工作区（Berth）chips ---------- */
+/* ---------- 工作区（Berth）下拉切换器 ---------- */
 
 let berthSig = '';
+let berthDdOpen = false;
 
 function renderBerths() {
-  const sig = JSON.stringify([state.activeBerthId, state.berths.map((b) => [b.id, b.name, b.icon])]);
+  const sig = JSON.stringify([state.activeBerthId, state.berths.map((b) => [b.id, b.name, b.icon]), berthDdOpen, editing]);
   if (sig === berthSig && els.berthBar.childElementCount > 0) return;
   berthSig = sig;
   els.berthBar.innerHTML = '';
-  // chips 放滚动容器（展开态横向滚 / 收起态限高竖向滚），＋按钮固定在容器外
-  const scroll = document.createElement('div');
-  scroll.className = 'berth-scroll';
+  const current = state.berths.find((b) => b.id === state.activeBerthId) ?? state.berths[0];
+  if (!current) return;
+
+  // 常驻控件：当前工作区图标 + 名称 + ▾（收起态只显图标）
+  const dd = document.createElement('button');
+  dd.className = 'berth-dd' + (berthDdOpen ? ' open' : '');
+  dd.title = `工作区：${current.name}`;
+  dd.innerHTML = `<span>${escapeHtml(current.icon)}</span><span class="berth-dd-name">${escapeHtml(current.name)}</span><span class="berth-dd-caret">▾</span>`;
+  dd.addEventListener('click', () => {
+    if (editing) return;
+    berthDdOpen = !berthDdOpen;
+    berthSig = '';
+    render();
+  });
+  els.berthBar.appendChild(dd);
+
+  if (!berthDdOpen) return;
+
+  // 下拉面板：全部工作区 + 新建入口
+  const panel = document.createElement('div');
+  panel.className = 'berth-dd-panel';
   state.berths.forEach((b) => {
-    const chip = document.createElement('button');
-    chip.className = 'berth-chip' + (b.id === state.activeBerthId ? ' active' : '');
-    chip.title = b.name;
-    chip.innerHTML = `<span>${escapeHtml(b.icon)}</span><span class="berth-name">${escapeHtml(b.name)}</span>`;
-    chip.addEventListener('click', () => {
+    const item = document.createElement('button');
+    item.className = 'berth-dd-item' + (b.id === state.activeBerthId ? ' active' : '');
+    item.title = b.name;
+    item.innerHTML = `<span>${escapeHtml(b.icon)}</span><span class="berth-dd-item-name">${escapeHtml(b.name)}</span><span class="berth-dd-check">✓</span>`;
+    item.addEventListener('click', () => {
       if (editing) return;
-      window.api.berthSwitch(b.id);
+      berthDdOpen = false;
+      berthSig = '';
+      if (b.id !== state.activeBerthId) window.api.berthSwitch(b.id);
+      else render();
     });
-    chip.addEventListener('contextmenu', (e) => {
+    item.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       window.api.berthMenu(b.id);
     });
-    scroll.appendChild(chip);
+    panel.appendChild(item);
   });
-  els.berthBar.appendChild(scroll);
-  // 选中工作区自动滚入视野（工作区多时切换不用手动找）；
-  // rAF 等 collapsed 限高布局稳定后再滚，避免布局未定时空转
-  const active = scroll.querySelector('.berth-chip.active');
-  if (active) requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
   const add = document.createElement('button');
-  add.className = 'berth-add';
-  add.title = '新建工作区';
-  add.textContent = '＋';
-  add.addEventListener('click', () => startBerthCreate());
-  els.berthBar.appendChild(add);
+  add.className = 'berth-dd-new';
+  add.textContent = '＋ 新建工作区';
+  add.addEventListener('click', () => startBerthCreate(add));
+  panel.appendChild(add);
+  els.berthBar.appendChild(panel);
 }
 
-/** 内联新建工作区：＋ 变输入框，Enter 确认（风格与账号重命名一致） */
-function startBerthCreate() {
+/** 点击面板外关闭（mousedown 而非 click：先于 blur，避免误保存输入态） */
+document.addEventListener('mousedown', (e) => {
+  if (!berthDdOpen || editing) return;
+  if (e.target instanceof Node && els.berthBar.contains(e.target)) return;
+  berthDdOpen = false;
+  berthSig = '';
+  render();
+});
+
+/** 面板内新建工作区：入口变输入框，Enter 确认（风格与账号重命名一致） */
+function startBerthCreate(addBtn) {
   if (editing) return;
-  const addBtn = els.berthBar.querySelector('.berth-add');
-  if (!addBtn) return;
   editing = true;
+  berthSig = '';
+  render(); // 以 editing 态重渲染面板，拿到新的入口按钮
+  const btn = addBtn.isConnected ? addBtn : els.berthBar.querySelector('.berth-dd-new');
+  if (!btn) { editing = false; return; }
   const input = document.createElement('input');
   input.className = 'berth-new-input';
   input.maxLength = 12;
-  input.placeholder = '工作区名称';
+  input.placeholder = '工作区名称，Enter 确认';
   input.setAttribute('spellcheck', 'false');
-  addBtn.replaceWith(input);
+  btn.replaceWith(input);
   let closed = false;
   let composing = false;
   const done = async (save) => {
     if (closed) return;
     closed = true;
     editing = false;
+    berthDdOpen = false; // 完成（无论保存与否）收起面板
     const v = input.value.trim();
-    if (input.isConnected) input.replaceWith(addBtn);
-    berthSig = ''; // 强制刷新
+    berthSig = '';
     render();
     if (save && v) await window.api.berthAdd(v);
   };
@@ -152,31 +180,34 @@ function startBerthCreate() {
   input.focus();
 }
 
-/** 菜单「重命名工作区」→ 在对应 chip 上内联编辑 */
+/** 菜单「重命名工作区」→ 打开面板并在对应项上内联编辑 */
 window.api.onBerthRenameStart((id) => {
   const b = state.berths.find((x) => x.id === id);
-  if (!b || editing) return;
-  const chips = els.berthBar.querySelectorAll('.berth-chip');
-  const chip = Array.from(chips).find((c) => c.querySelector('.berth-name')?.textContent === b.name || c.title === b.name);
-  if (!chip) return;
+  if (!b) return;
+  if (editing) return;
+  berthDdOpen = true;
   editing = true;
-  const nameEl = chip.querySelector('.berth-name');
+  berthSig = '';
+  render();
+  const item = Array.from(els.berthBar.querySelectorAll('.berth-dd-item')).find(
+    (c) => c.querySelector('.berth-dd-item-name')?.textContent === b.name,
+  );
+  if (!item) { editing = false; berthSig = ''; render(); return; }
+  const nameEl = item.querySelector('.berth-dd-item-name');
   const input = document.createElement('input');
   input.className = 'berth-new-input';
   input.value = b.name;
   input.maxLength = 12;
   input.setAttribute('spellcheck', 'false');
   nameEl.replaceWith(input);
-  chip.classList.add('renaming');
   let closed = false;
   let composing = false;
   const done = async (save) => {
     if (closed) return;
     closed = true;
     editing = false;
+    berthDdOpen = false;
     const v = input.value.trim();
-    chip.classList.remove('renaming');
-    if (input.isConnected) input.replaceWith(nameEl);
     berthSig = '';
     render();
     if (save && v && v !== b.name) await window.api.berthRename(b.id, v);

@@ -45,43 +45,48 @@
     .sb-list { flex: 1; overflow-y: auto; padding: 6px; }
     .sb-footer { flex: none; padding: 10px; border-top: 1px solid var(--rail-line); }
 
-    /* 工作区（Berth）chips：内嵌横向条，位于品牌区与账号列表之间。
-       工作区多时不换行/不占满：展开态单行横向滚动，收起态限高竖向滚动；
-       ＋按钮固定在滚动区外，选中项由 JS 滚入视野。 */
-    .sb-berths {
-      flex: none; display: flex; align-items: center; gap: 6px;
-      padding: 0 10px 10px;
-      -webkit-app-region: no-drag;
-    }
-    .berth-scroll {
-      display: flex; align-items: center; gap: 6px;
-      flex: 1; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain;
-      scrollbar-width: none;
-    }
-    .berth-scroll::-webkit-scrollbar { display: none; }
-    .berth-chip {
-      display: inline-flex; align-items: center; gap: 5px;
-      height: 26px; padding: 0 10px; border-radius: 13px;
+    /* 工作区（Berth）下拉切换器：常驻「当前工作区」控件，点击展开列表 */
+    .sb-berths { flex: none; position: relative; padding: 0 10px 10px; -webkit-app-region: no-drag; }
+    .berth-dd {
+      display: flex; align-items: center; gap: 6px; width: 100%;
+      height: 30px; padding: 0 8px; border-radius: 8px;
       border: 1px solid var(--rail-line); background: #fff;
       font-size: 12px; color: #44526B; cursor: pointer; user-select: none;
-      white-space: nowrap; max-width: 100%;
     }
-    .berth-chip:hover { border-color: #B9C8E0; background: var(--rail-hover); }
-    .berth-chip.active {
-      background: var(--rail-sel); border-color: var(--blue); color: var(--blue);
-      font-weight: 600;
+    .berth-dd:hover { border-color: #B9C8E0; background: var(--rail-hover); }
+    .berth-dd.open { border-color: var(--blue); }
+    .berth-dd .berth-dd-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .berth-dd .berth-dd-caret { flex: none; font-size: 10px; color: #8296B5; transition: transform .15s; }
+    .berth-dd.open .berth-dd-caret { transform: rotate(180deg); }
+    .berth-dd-panel {
+      position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 50;
+      width: 100%; max-height: 300px; overflow-y: auto; overscroll-behavior: contain;
+      background: #fff; border: 1px solid var(--rail-line); border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(15, 37, 74, .14); padding: 4px;
     }
-    .berth-chip .berth-name { overflow: hidden; text-overflow: ellipsis; }
-    .berth-add {
-      width: 26px; height: 26px; flex: none; border-radius: 13px;
-      border: 1px dashed #B9C8E0; background: transparent;
-      color: #8296B5; font-size: 13px; line-height: 1; cursor: pointer;
+    .berth-dd-item {
+      display: flex; align-items: center; gap: 7px; width: 100%;
+      height: 30px; padding: 0 8px; border-radius: 7px;
+      font-size: 12px; color: #44526B; cursor: pointer; user-select: none;
+      border: none; background: transparent; text-align: left;
     }
-    .berth-add:hover { border-color: var(--blue); color: var(--blue); }
+    .berth-dd-item:hover { background: var(--rail-hover); }
+    .berth-dd-item.active { color: var(--blue); font-weight: 600; }
+    .berth-dd-item .berth-dd-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .berth-dd-item .berth-dd-check { flex: none; width: 14px; font-size: 11px; color: var(--blue); visibility: hidden; }
+    .berth-dd-item.active .berth-dd-check { visibility: visible; }
+    .berth-dd-new {
+      display: flex; align-items: center; gap: 7px; width: 100%;
+      height: 30px; padding: 0 8px; margin-top: 2px;
+      border: none; border-top: 1px solid var(--rail-line); border-radius: 0 0 7px 7px;
+      font-size: 12px; color: #8296B5; cursor: pointer; user-select: none; background: transparent;
+      text-align: left;
+    }
+    .berth-dd-new:hover { background: var(--rail-hover); color: var(--blue); }
     .berth-new-input {
-      height: 26px; padding: 0 10px; border-radius: 13px;
+      height: 28px; padding: 0 8px; border-radius: 7px;
       border: 1px solid var(--blue); outline: none;
-      font-size: 12px; width: 96px;
+      font-size: 12px; width: 100%; margin: 2px 0;
     }
 
     .acc-item {
@@ -158,17 +163,11 @@
     body.collapsed .sb-list { padding: 6px 0; }
     body.collapsed .sb-footer { padding: 10px; }
     /* 窄栏：工作区 chips 只显示图标，纵向排布 */
-    body.collapsed .sb-berths { flex-direction: column; align-items: center; padding: 0 0 10px; }
-    body.collapsed .berth-scroll {
-      flex-direction: column; align-items: center;
-      max-height: 204px; /* 约容纳 5 个 34px chip；更多则竖向滚动，不挤压账号列表 */
-      overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain;
-      scrollbar-width: none;
-    }
-    body.collapsed .berth-chip { flex: none; width: 34px; height: 34px; padding: 0; border-radius: 10px; justify-content: center; font-size: 15px; }
-    body.collapsed .berth-chip .berth-name { display: none; }
-    body.collapsed .berth-add { flex: none; width: 34px; height: 34px; border-radius: 10px; }
-    body.collapsed .berth-new-input { width: 60px; padding: 0 6px; }
+    body.collapsed .sb-berths { padding: 0 0 10px; }
+    body.collapsed .berth-dd { width: 34px; height: 34px; justify-content: center; padding: 0; border-radius: 10px; font-size: 16px; }
+    body.collapsed .berth-dd .berth-dd-name, body.collapsed .berth-dd .berth-dd-caret { display: none; }
+    /* 收起态面板从窄栏左侧弹出，宽度独立于 34px 控件 */
+    body.collapsed .berth-dd-panel { left: 10px; width: 170px; }
 
     .add-btn {
       width: 100%; height: 36px; border: none;
