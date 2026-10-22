@@ -45,49 +45,20 @@
     .sb-list { flex: 1; overflow-y: auto; padding: 6px; }
     .sb-footer { flex: none; padding: 10px; border-top: 1px solid var(--rail-line); }
 
-    /* 工作区（Berth）下拉切换器：常驻「当前工作区」控件，点击展开列表 */
+    /* 工作区切换器：常驻「当前工作区」触发器（下拉面板在 overlay.html 浮层里，盖在网页之上） */
     .sb-berths { flex: none; position: relative; padding: 0 10px 10px; -webkit-app-region: no-drag; }
     .berth-dd {
-      display: flex; align-items: center; gap: 6px; width: 100%;
-      height: 30px; padding: 0 8px; border-radius: 8px;
-      border: 1px solid var(--rail-line); background: #fff;
-      font-size: 12px; color: #44526B; cursor: pointer; user-select: none;
+      display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%;
+      min-height: 32px; padding: 6px 10px; border-radius: 9px;
+      border: 1px solid var(--rail-line); background: rgba(255, 255, 255, .72);
+      font: inherit; font-size: 12.5px; font-weight: 600; color: #2A3A55; cursor: pointer; user-select: none;
+      transition: background .12s, border-color .12s;
     }
-    .berth-dd:hover { border-color: #B9C8E0; background: var(--rail-hover); }
-    .berth-dd.open { border-color: var(--blue); }
-    .berth-dd .berth-dd-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-    .berth-dd .berth-dd-caret { flex: none; font-size: 10px; color: #8296B5; transition: transform .15s; }
-    .berth-dd.open .berth-dd-caret { transform: rotate(180deg); }
-    .berth-dd-panel {
-      position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 50;
-      width: 100%; max-height: 300px; overflow-y: auto; overscroll-behavior: contain;
-      background: #fff; border: 1px solid var(--rail-line); border-radius: 10px;
-      box-shadow: 0 8px 24px rgba(15, 37, 74, .14); padding: 4px;
-    }
-    .berth-dd-item {
-      display: flex; align-items: center; gap: 7px; width: 100%;
-      height: 30px; padding: 0 8px; border-radius: 7px;
-      font-size: 12px; color: #44526B; cursor: pointer; user-select: none;
-      border: none; background: transparent; text-align: left;
-    }
-    .berth-dd-item:hover { background: var(--rail-hover); }
-    .berth-dd-item.active { color: var(--blue); font-weight: 600; }
-    .berth-dd-item .berth-dd-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .berth-dd-item .berth-dd-check { flex: none; width: 14px; font-size: 11px; color: var(--blue); visibility: hidden; }
-    .berth-dd-item.active .berth-dd-check { visibility: visible; }
-    .berth-dd-new {
-      display: flex; align-items: center; gap: 7px; width: 100%;
-      height: 30px; padding: 0 8px; margin-top: 2px;
-      border: none; border-top: 1px solid var(--rail-line); border-radius: 0 0 7px 7px;
-      font-size: 12px; color: #8296B5; cursor: pointer; user-select: none; background: transparent;
-      text-align: left;
-    }
-    .berth-dd-new:hover { background: var(--rail-hover); color: var(--blue); }
-    .berth-new-input {
-      height: 28px; padding: 0 8px; border-radius: 7px;
-      border: 1px solid var(--blue); outline: none;
-      font-size: 12px; width: 100%; margin: 2px 0;
-    }
+    .berth-dd:hover { background: #fff; border-color: #AFC6E8; }
+    .berth-dd.open { background: #fff; border-color: var(--blue); }
+    .berth-dd .berth-dd-name { flex: 1; min-width: 0; text-align: left; line-height: 1.3; word-break: break-all; }
+    .berth-dd .berth-dd-caret { flex: none; color: #7C93B6; transition: transform .15s; }
+    .berth-dd.open .berth-dd-caret { transform: rotate(180deg); color: var(--blue); }
 
     .acc-item {
       display: flex; align-items: center; gap: 10px;
@@ -173,58 +144,12 @@
     body.collapsed .acc-item.active .acc-label { color: var(--blue); font-weight: 600; }
     body.collapsed .sb-list { padding: 4px 0; }
     body.collapsed .sb-footer { padding: 10px; }
-    /* 工作区控件不显示 icon（节省空间，用户要求）：只显示名字 */
-    .berth-dd > span:first-child { display: none; }
-    /* 工作区不显示 emoji icon（用户要求，展开/收起两态统一）：触发器与面板条目都只留名字 */
-    .berth-dd > span:first-child,
-    .berth-dd-item > span:first-child { display: none; }
-    /* 展开态触发器：同样的淡蓝胶囊（名字居左 + ▾ 靠右），与收起态一脉相承 */
-    body:not(.collapsed) .berth-dd { height: 32px; border: none; background: rgba(0, 82, 217, .09); border-radius: 10px; padding: 0 12px; }
-    body:not(.collapsed) .berth-dd:hover { background: rgba(0, 82, 217, .15); }
-    body:not(.collapsed) .berth-dd.open { background: rgba(0, 82, 217, .2); }
-    body:not(.collapsed) .berth-dd .berth-dd-name { color: var(--blue); }
-    body:not(.collapsed) .berth-dd .berth-dd-caret { color: var(--blue); opacity: .75; }
-    body:not(.collapsed) .berth-dd-panel { top: 38px; margin-top: 0; }
-    body:not(.collapsed) .berth-dd-item.active { background: #E9F0FD; }
-    /* 窄栏：工作区切换器 = 淡蓝胶囊（名字 + ▾ 箭头，一眼可辨可点）+ 下方细分隔线，
-       把「工作区」与「账号列表」分成两层，不再是一行漂浮文字 */
-    body.collapsed .sb-berths { padding: 4px 10px 12px; margin-bottom: 4px; }
-    body.collapsed .sb-berths::after {
-      content: ''; position: absolute; left: 18px; right: 18px; bottom: 0;
-      height: 1px; background: var(--rail-line);
-    }
-    /* 触发器：按内容收缩、居中的小标签（与 26px logo / 36px 头像同一视觉量级），
-       名字允许换行，不再被省略 */
-    body.collapsed .berth-dd {
-      flex-direction: row; justify-content: center; align-items: center; gap: 3px;
-      width: fit-content; max-width: 100%; min-width: 52px; margin: 0 auto;
-      height: auto; min-height: 24px; padding: 3px 9px; border-radius: 8px;
-      border: none; background: rgba(0, 82, 217, .09);
-    }
-    body.collapsed .berth-dd:hover { background: rgba(0, 82, 217, .15); }
-    body.collapsed .berth-dd.open { background: rgba(0, 82, 217, .2); }
-    body.collapsed .berth-dd .berth-dd-name {
-      flex: 0 1 auto; min-width: 0; font-size: 12px; font-weight: 600; color: var(--blue);
-      line-height: 1.3; white-space: normal; word-break: break-all; overflow: visible; text-overflow: clip; text-align: center;
-    }
-    body.collapsed .berth-dd .berth-dd-caret { display: inline; font-size: 8px; color: var(--blue); opacity: .75; }
-    /* 收起态：面板 = 窄栏内 macOS 菜单风格。窄栏仅 88px，所以去掉 ✓ 占位列、
-       选中项用浅蓝底+蓝色粗体表示，名字整行显示、过长自动换行（不省略） */
-    body.collapsed .berth-dd-panel {
-      left: 4px; right: 4px; width: auto; top: calc(100% - 8px); margin-top: 0; padding: 4px; border-radius: 12px;
-      overflow-x: hidden; box-shadow: 0 10px 32px rgba(15, 37, 74, .2);
-    }
-    body.collapsed .berth-dd-item {
-      justify-content: center; gap: 0; height: auto; min-height: 30px; padding: 6px 4px; border-radius: 8px;
-    }
-    body.collapsed .berth-dd-item.active { background: #E9F0FD; }
-    body.collapsed .berth-dd-item .berth-dd-check { display: none; }
-    body.collapsed .berth-dd-item .berth-dd-item-name {
-      flex: 1 1 auto; text-align: center; font-weight: 500; line-height: 1.3;
-      white-space: normal; word-break: break-all; overflow: visible; text-overflow: clip;
-    }
-    body.collapsed .berth-dd-item.active .berth-dd-item-name { font-weight: 600; }
-    body.collapsed .berth-dd-new { justify-content: center; padding: 6px 4px; height: auto; min-height: 30px; border-top: none; margin-top: 4px; border-radius: 8px; white-space: normal; }
+    /* 窄栏（88px）：logo / 切换器 / 头像 同一条居中轴线，宽度成梯度（30 → 68 → 36） */
+    body.collapsed .sb-header { height: 64px; padding: 34px 0 0; }
+    body.collapsed .sb-logo { width: 30px; height: 30px; border-radius: 8px; }
+    body.collapsed .sb-berths { padding: 8px 8px 6px; }
+    body.collapsed .berth-dd { justify-content: center; gap: 3px; min-height: 30px; padding: 5px 6px; font-size: 12px; }
+    body.collapsed .berth-dd .berth-dd-name { flex: 0 1 auto; text-align: center; }
 
     .add-btn {
       width: 100%; height: 36px; border: none;

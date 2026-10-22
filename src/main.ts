@@ -787,6 +787,7 @@ function viewBounds(): Rectangle {
 function layoutViews(): void {
   const b = viewBounds();
   for (const view of views.values()) view.setBounds(b);
+  if (berthOverlayOpen && berthOverlay) berthOverlay.setBounds(overlayBounds());
 }
 
 function activeWc(): WebContents | null {
@@ -1014,6 +1015,7 @@ function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView
   views.set(tab.id, view);
   if (win) {
     win.contentView.addChildView(view);
+    if (berthOverlayOpen && berthOverlay) win.contentView.addChildView(berthOverlay); // 浮层始终最顶
     view.setBounds(viewBounds());
     view.setVisible(false);
   }
@@ -1218,6 +1220,7 @@ function cycleTab(delta: number): void {
 
 function setSidebarCollapsed(next: boolean): void {
   if (sidebarCollapsed === next) return;
+  closeBerthOverlay(); // 触发器位置会变，浮层锚点作废
   sidebarCollapsed = next;
   scheduleUiSave();
   layoutViews();
@@ -1547,12 +1550,72 @@ function removeBerth(bid: string): boolean {
   if (activeBerthId === bid) switchBerth(DEFAULT_BERTH_ID);
   scheduleSave();
   sendState();
+  closeBerthOverlay();
   return true;
 }
 
-/** 菜单「重命名工作区」→ 通知渲染层在 chip 上内联编辑 */
+/* ---------- 工作区下拉浮层 ----------
+ * 面板必须盖在网页 WebContentsView 之上（DOM 的 z-index 管不了原生视图），
+ * 所以做成一个全窗口透明的浮层视图，置于所有子视图最顶；网页区不位移、不缩放。 */
+interface BerthAnchor { x: number; y: number; w: number; h: number }
+let berthOverlay: WebContentsView | null = null;
+let berthOverlayOpen = false;
+let berthOverlayAnchor: BerthAnchor = { x: 0, y: 0, w: 0, h: 0 };
+
+function overlayBounds(): Rectangle {
+  if (!win || win.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
+  const [cw, ch] = win.getContentSize();
+  return { x: 0, y: 0, width: cw, height: ch };
+}
+
+function sendBerthOverlayInit(): void {
+  if (!berthOverlay || !berthOverlayOpen) return;
+  berthOverlay.webContents.send('overlay:init', {
+    berths,
+    activeBerthId,
+    anchor: berthOverlayAnchor,
+    collapsed: sidebarCollapsed,
+  });
+}
+
+function openBerthOverlay(anchor: BerthAnchor): void {
+  if (!win || win.isDestroyed()) return;
+  if (!berthOverlay) {
+    berthOverlay = new WebContentsView({
+      webPreferences: {
+        preload: path.join(__dirname, 'overlayPreload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    berthOverlay.setBackgroundColor('#00000000');
+    const wc = berthOverlay.webContents;
+    wc.on('will-navigate', (e) => e.preventDefault());
+    wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+    void wc.loadFile(path.join(__dirname, '..', 'overlay.html'));
+  }
+  berthOverlayAnchor = anchor;
+  berthOverlayOpen = true;
+  win.contentView.addChildView(berthOverlay); // 已是子视图时会被提到最顶
+  berthOverlay.setBounds(overlayBounds());
+  sendBerthOverlayInit();
+  berthOverlay.webContents.focus();
+  win.webContents.send('berth:panel', true);
+}
+
+function closeBerthOverlay(): void {
+  if (!berthOverlayOpen) return;
+  berthOverlayOpen = false;
+  if (win && !win.isDestroyed()) {
+    if (berthOverlay) win.contentView.removeChildView(berthOverlay);
+    win.webContents.send('berth:panel', false);
+    win.webContents.focus();
+  }
+}
+
+/** 菜单「重命名工作区」→ 通知浮层在对应项上内联编辑 */
 function requestBerthRename(id: string): void {
-  win?.webContents.send('berth:rename-start', id);
+  if (berthOverlayOpen && berthOverlay) berthOverlay.webContents.send('overlay:rename', id);
 }
 
 function registerIpc(): void {
@@ -1626,6 +1689,7 @@ function registerIpc(): void {
     berths.push(b);
     saveBerthsNow();
     switchBerth(b.id); // 新建即切入，符合「为这件事开一个区」的心智
+    closeBerthOverlay();
     return b;
   });
 
@@ -1637,12 +1701,36 @@ function registerIpc(): void {
     b.name = n;
     saveBerthsNow();
     sendState();
+    closeBerthOverlay();
     return true;
   });
 
   ipcMain.handle('berths:remove', (_e, id: unknown): boolean => removeBerth(String(id)));
 
-  ipcMain.handle('berths:switch', (_e, id: unknown): boolean => switchBerth(String(id)));
+  ipcMain.handle('berths:switch', (_e, id: unknown): boolean => {
+    const ok = switchBerth(String(id));
+    closeBerthOverlay();
+    return ok;
+  });
+
+  // 工作区下拉浮层：主窗口点击触发器 → 开/关；浮层页自身负责就绪/关闭回调
+  ipcMain.handle('berths:panel-toggle', (e, anchor: unknown): boolean => {
+    if (!win || e.sender !== win.webContents) return false;
+    if (berthOverlayOpen) {
+      closeBerthOverlay();
+      return false;
+    }
+    const a = (anchor ?? {}) as Record<string, unknown>;
+    const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    openBerthOverlay({ x: n(a.x), y: n(a.y), w: n(a.w), h: n(a.h) });
+    return true;
+  });
+  ipcMain.handle('overlay:ready', (e): void => {
+    if (berthOverlay && e.sender === berthOverlay.webContents) sendBerthOverlayInit();
+  });
+  ipcMain.handle('overlay:close', (e): void => {
+    if (berthOverlay && e.sender === berthOverlay.webContents) closeBerthOverlay();
+  });
 
   // 工作区右键菜单：重命名 / 删除
   ipcMain.handle('berths:menu', (_e, id: unknown): void => {

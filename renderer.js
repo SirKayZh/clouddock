@@ -72,162 +72,36 @@ function render() {
   }
 }
 
-/* ---------- 工作区（Berth）下拉切换器 ---------- */
+/* ---------- 工作区（Berth）下拉切换器 ----------
+ * 这里只画触发器；下拉面板由主进程在网页视图之上开一个透明浮层（overlay.html）承载，
+ * 所以面板可以自由伸出窄栏、盖住网页区，而网页区本身不位移。 */
 
 let berthSig = '';
 let berthDdOpen = false;
 
 function renderBerths() {
-  const sig = JSON.stringify([state.activeBerthId, state.berths.map((b) => [b.id, b.name, b.icon]), berthDdOpen, editing]);
+  const sig = JSON.stringify([state.activeBerthId, state.berths.map((b) => [b.id, b.name]), berthDdOpen]);
   if (sig === berthSig && els.berthBar.childElementCount > 0) return;
   berthSig = sig;
   els.berthBar.innerHTML = '';
   const current = state.berths.find((b) => b.id === state.activeBerthId) ?? state.berths[0];
   if (!current) return;
 
-  // 常驻控件：当前工作区图标 + 名称 + ▾（收起态只显图标）
   const dd = document.createElement('button');
   dd.className = 'berth-dd' + (berthDdOpen ? ' open' : '');
   dd.title = `工作区：${current.name}`;
-  dd.innerHTML = `<span>${escapeHtml(current.icon)}</span><span class="berth-dd-name">${escapeHtml(current.name)}</span><span class="berth-dd-caret">▾</span>`;
+  dd.innerHTML = `<span class="berth-dd-name">${escapeHtml(current.name)}</span><svg class="berth-dd-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   dd.addEventListener('click', () => {
-    if (editing) return;
-    berthDdOpen = !berthDdOpen;
-    berthSig = '';
-    render();
+    const r = dd.getBoundingClientRect();
+    window.api.berthPanelToggle({ x: r.left, y: r.top, w: r.width, h: r.height });
   });
   els.berthBar.appendChild(dd);
-
-  if (!berthDdOpen) return;
-
-  // 下拉面板：全部工作区 + 新建入口
-  const panel = document.createElement('div');
-  panel.className = 'berth-dd-panel';
-  state.berths.forEach((b) => {
-    const item = document.createElement('button');
-    item.className = 'berth-dd-item' + (b.id === state.activeBerthId ? ' active' : '');
-    item.title = b.name;
-    item.innerHTML = `<span>${escapeHtml(b.icon)}</span><span class="berth-dd-item-name">${escapeHtml(b.name)}</span><span class="berth-dd-check">✓</span>`;
-    item.addEventListener('click', () => {
-      if (editing) return;
-      berthDdOpen = false;
-      berthSig = '';
-      if (b.id !== state.activeBerthId) window.api.berthSwitch(b.id);
-      else render();
-    });
-    item.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      window.api.berthMenu(b.id);
-    });
-    panel.appendChild(item);
-  });
-  const add = document.createElement('button');
-  add.className = 'berth-dd-new';
-  // 收起态面板仅 88px 宽，长文案放不下
-  add.textContent = document.body.classList.contains('collapsed') ? '＋ 新建' : '＋ 新建工作区';
-  add.addEventListener('click', () => startBerthCreate(add));
-  panel.appendChild(add);
-  els.berthBar.appendChild(panel);
 }
 
-/** 点击面板外关闭（mousedown 而非 click：先于 blur，避免误保存输入态） */
-document.addEventListener('mousedown', (e) => {
-  if (!berthDdOpen || editing) return;
-  if (e.target instanceof Node && els.berthBar.contains(e.target)) return;
-  berthDdOpen = false;
+window.api.onBerthPanel((open) => {
+  berthDdOpen = open;
   berthSig = '';
-  render();
-});
-
-/** 面板内新建工作区：入口变输入框，Enter 确认（风格与账号重命名一致） */
-function startBerthCreate(addBtn) {
-  if (editing) return;
-  editing = true;
-  berthSig = '';
-  render(); // 以 editing 态重渲染面板，拿到新的入口按钮
-  const btn = addBtn.isConnected ? addBtn : els.berthBar.querySelector('.berth-dd-new');
-  if (!btn) { editing = false; return; }
-  const input = document.createElement('input');
-  input.className = 'berth-new-input';
-  input.maxLength = 12;
-  input.placeholder = '工作区名称，Enter 确认';
-  input.setAttribute('spellcheck', 'false');
-  btn.replaceWith(input);
-  let closed = false;
-  let composing = false;
-  const done = async (save) => {
-    if (closed) return;
-    closed = true;
-    editing = false;
-    berthDdOpen = false; // 完成（无论保存与否）收起面板
-    const v = input.value.trim();
-    berthSig = '';
-    render();
-    if (save && v) await window.api.berthAdd(v);
-  };
-  input.addEventListener('compositionstart', () => { composing = true; });
-  input.addEventListener('compositionend', () => { composing = false; });
-  input.addEventListener('keydown', (e) => {
-    e.stopPropagation();
-    if (composing || e.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Enter') done(true);
-    if (e.key === 'Escape') done(false);
-  });
-  input.addEventListener('blur', () => {
-    if (composing) return;
-    done(true);
-  });
-  window.api.focusUi();
-  input.focus();
-}
-
-/** 菜单「重命名工作区」→ 打开面板并在对应项上内联编辑 */
-window.api.onBerthRenameStart((id) => {
-  const b = state.berths.find((x) => x.id === id);
-  if (!b) return;
-  if (editing) return;
-  berthDdOpen = true;
-  editing = true;
-  berthSig = '';
-  render();
-  const item = Array.from(els.berthBar.querySelectorAll('.berth-dd-item')).find(
-    (c) => c.querySelector('.berth-dd-item-name')?.textContent === b.name,
-  );
-  if (!item) { editing = false; berthSig = ''; render(); return; }
-  const nameEl = item.querySelector('.berth-dd-item-name');
-  const input = document.createElement('input');
-  input.className = 'berth-new-input';
-  input.value = b.name;
-  input.maxLength = 12;
-  input.setAttribute('spellcheck', 'false');
-  nameEl.replaceWith(input);
-  let closed = false;
-  let composing = false;
-  const done = async (save) => {
-    if (closed) return;
-    closed = true;
-    editing = false;
-    berthDdOpen = false;
-    const v = input.value.trim();
-    berthSig = '';
-    render();
-    if (save && v && v !== b.name) await window.api.berthRename(b.id, v);
-  };
-  input.addEventListener('compositionstart', () => { composing = true; });
-  input.addEventListener('compositionend', () => { composing = false; });
-  input.addEventListener('keydown', (e) => {
-    e.stopPropagation();
-    if (composing || e.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Enter') done(true);
-    if (e.key === 'Escape') done(false);
-  });
-  input.addEventListener('blur', () => {
-    if (composing) return;
-    done(true);
-  });
-  window.api.focusUi();
-  input.focus();
-  input.select();
+  renderBerths();
 });
 
 let tabSig = '';

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self'">
+  <title>workspace-overlay</title>
+  <style>
+    :root { --blue: #0052D9; --hover: #F1F5FB; --sel: #E9F0FD; --line: #E6EBF3; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; font-size: 13px; color: #1C2438; user-select: none; }
+    #backdrop { position: fixed; inset: 0; }
+    #panel {
+      position: absolute; padding: 6px; background: #fff; border-radius: 12px;
+      border: 1px solid rgba(15, 37, 74, .08);
+      box-shadow: 0 12px 36px rgba(15, 37, 74, .22), 0 2px 6px rgba(15, 37, 74, .08);
+      animation: pop .12s ease-out; transform-origin: top left;
+    }
+    @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
+    .title { padding: 6px 10px 4px; font-size: 11px; color: #8A94A8; letter-spacing: .5px; }
+    .item {
+      display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 7px 10px;
+      border: none; background: transparent; border-radius: 8px; cursor: pointer;
+      font: inherit; text-align: left; color: #1C2438;
+    }
+    .item:hover { background: var(--hover); }
+    .item.active { background: var(--sel); color: var(--blue); font-weight: 600; }
+    .item .name { flex: 1; min-width: 0; word-break: break-all; line-height: 1.35; }
+    .item .check { flex: none; width: 14px; color: var(--blue); font-size: 12px; visibility: hidden; }
+    .item.active .check { visibility: visible; }
+    .sep { height: 1px; background: var(--line); margin: 5px 4px; }
+    .item.new { color: #5A6B88; }
+    .item.new:hover { color: var(--blue); }
+    .item.new .plus { flex: none; width: 14px; text-align: center; font-size: 15px; line-height: 1; }
+    input.edit {
+      flex: 1; min-width: 0; height: 24px; padding: 0 8px; border: 1px solid var(--blue); border-radius: 6px;
+      font: inherit; outline: none; user-select: text; background: #fff; color: #1C2438;
+    }
+  </style>
+</head>
+<body>
+  <div id="backdrop"></div>
+  <div id="panel" style="visibility:hidden"></div>
+  <script src="overlay.js"></script>
+</body>
+</html>

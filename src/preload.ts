@@ -18,7 +18,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('berths:rename', id, name),
   berthRemove: (id: string): Promise<boolean> => ipcRenderer.invoke('berths:remove', id),
   berthSwitch: (id: string): Promise<boolean> => ipcRenderer.invoke('berths:switch', id),
-  berthMenu: (id: string): Promise<void> => ipcRenderer.invoke('berths:menu', id),
   newTab: (url?: string): Promise<boolean> => ipcRenderer.invoke('tabs:new', url),
   closeTab: (tabId: string): Promise<boolean> => ipcRenderer.invoke('tabs:close', tabId),
   switchTab: (tabId: string): Promise<boolean> => ipcRenderer.invoke('tabs:switch', tabId),
@@ -35,8 +34,11 @@ contextBridge.exposeInMainWorld('api', {
   onRenameStart: (cb: (id: string) => void): void => {
     ipcRenderer.on('rename:start', (_event, id: unknown) => cb(String(id)));
   },
-  onBerthRenameStart: (cb: (id: string) => void): void => {
-    ipcRenderer.on('berth:rename-start', (_event, id: unknown) => cb(String(id)));
+  /** 工作区下拉：传入触发器在窗口内的矩形，主进程在最顶层开/关浮层 */
+  berthPanelToggle: (anchor: { x: number; y: number; w: number; h: number }): Promise<boolean> =>
+    ipcRenderer.invoke('berths:panel-toggle', anchor),
+  onBerthPanel: (cb: (open: boolean) => void): void => {
+    ipcRenderer.on('berth:panel', (_event, open: unknown) => cb(Boolean(open)));
   },
   onState: (cb: (state: AppState) => void): void => {
     ipcRenderer.on('state:update', (_event, state: AppState) => cb(state));

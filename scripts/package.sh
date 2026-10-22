@@ -18,7 +18,7 @@ npm run build
 echo "==> 准备干净构建目录: $STAGE/src"
 SRCDIR="$STAGE/src"
 mkdir -p "$SRCDIR"
-cp package.json package-lock.json tsconfig.json index.html start.html renderer.js README.md "$SRCDIR/"
+cp package.json package-lock.json tsconfig.json index.html start.html overlay.html overlay.js renderer.js README.md "$SRCDIR/"
 cp -R src dist "$SRCDIR/"
 # npm ci：严格按 package-lock 安装，版本已锁定，构建可复现
 (cd "$SRCDIR" && npm ci --no-audit --no-fund)
@@ -36,7 +36,7 @@ echo "==> 组装 .app"
 /usr/bin/python3 -c "import os; os.unlink('$ELECTRON_APP/Contents/Resources/default_app.asar')"
 cp -R "$ELECTRON_APP" "$APP"
 mkdir -p "$APP/Contents/Resources/app"
-cp -R package.json dist index.html start.html renderer.js README.md "$APP/Contents/Resources/app/"
+cp -R package.json dist index.html start.html overlay.html overlay.js renderer.js README.md "$APP/Contents/Resources/app/"
 # App 图标（assets/gen_icon.py 生成）
 cp assets/workpier.icns "$APP/Contents/Resources/workpier.icns"
 plutil -replace CFBundleName -string "WorkPier" "$APP/Contents/Info.plist"
