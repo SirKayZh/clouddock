@@ -157,36 +157,64 @@
     /* 窄栏：圆角方形头像居中，名字缩小显示在下方（企业微信一样） */
     body.collapsed .acc-item {
       flex-direction: column; justify-content: center; gap: 4px;
-      height: auto; padding: 6px 0 5px; margin: 2px 8px;
+      height: auto; padding: 7px 0 6px; margin: 1px 5px; border-radius: 12px;
     }
-    body.collapsed .acc-avatar { width: 34px; height: 34px; font-size: 14px; }
+    /* 选中态：去掉大卡片背景，改为贴栏左缘的蓝色竖条（企微风格，干净利落） */
+    body.collapsed .acc-item.active { background: transparent; box-shadow: none; }
+    body.collapsed .acc-item.active::before {
+      content: ''; position: absolute; left: -5px; top: 50%; transform: translateY(-50%);
+      width: 3px; height: 24px; border-radius: 2px; background: var(--blue);
+    }
+    body.collapsed .acc-avatar { width: 36px; height: 36px; font-size: 14px; border-radius: 9px; }
     body.collapsed .acc-label {
-      display: block; max-width: 100%; padding: 0 4px; font-size: 11px; color: #4A5D7A;
+      display: block; max-width: 100%; padding: 0 2px; font-size: 11px; color: #44526B;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
     }
     body.collapsed .acc-item.active .acc-label { color: var(--blue); font-weight: 600; }
-    body.collapsed .sb-list { padding: 6px 0; }
+    body.collapsed .sb-list { padding: 4px 0; }
     body.collapsed .sb-footer { padding: 10px; }
     /* 工作区控件不显示 icon（节省空间，用户要求）：只显示名字 */
     .berth-dd > span:first-child { display: none; }
-    /* 窄栏：工作区控件仅显示工作区名字，单行居中 */
-    body.collapsed .sb-berths { padding: 0 8px 10px; }
-    body.collapsed .berth-dd {
-      flex-direction: column; justify-content: center;
-      width: 100%; height: auto; padding: 5px 0; border-radius: 10px; font-size: 12px;
+    /* 工作区不显示 emoji icon（用户要求，展开/收起两态统一）：触发器与面板条目都只留名字 */
+    .berth-dd > span:first-child,
+    .berth-dd-item > span:first-child { display: none; }
+    /* 展开态触发器：同样的淡蓝胶囊（名字居左 + ▾ 靠右），与收起态一脉相承 */
+    body:not(.collapsed) .berth-dd { height: 32px; border: none; background: rgba(0, 82, 217, .09); border-radius: 10px; padding: 0 12px; }
+    body:not(.collapsed) .berth-dd:hover { background: rgba(0, 82, 217, .15); }
+    body:not(.collapsed) .berth-dd.open { background: rgba(0, 82, 217, .2); }
+    body:not(.collapsed) .berth-dd .berth-dd-name { color: var(--blue); }
+    body:not(.collapsed) .berth-dd .berth-dd-caret { color: var(--blue); opacity: .75; }
+    body:not(.collapsed) .berth-dd-panel { top: 38px; margin-top: 0; }
+    body:not(.collapsed) .berth-dd-item.active { background: #E9F0FD; }
+    /* 窄栏：工作区切换器 = 淡蓝胶囊（名字 + ▾ 箭头，一眼可辨可点）+ 下方细分隔线，
+       把「工作区」与「账号列表」分成两层，不再是一行漂浮文字 */
+    body.collapsed .sb-berths { padding: 4px 10px 12px; margin-bottom: 4px; }
+    body.collapsed .sb-berths::after {
+      content: ''; position: absolute; left: 18px; right: 18px; bottom: 0;
+      height: 1px; background: var(--rail-line);
     }
-    body.collapsed .berth-dd .berth-dd-caret { display: none; }
+    body.collapsed .berth-dd {
+      flex-direction: row; justify-content: center; align-items: center; gap: 3px;
+      width: 100%; height: 26px; padding: 0 6px; border-radius: 13px;
+      border: none; background: rgba(0, 82, 217, .09);
+    }
+    body.collapsed .berth-dd:hover { background: rgba(0, 82, 217, .15); }
+    body.collapsed .berth-dd.open { background: rgba(0, 82, 217, .2); }
     body.collapsed .berth-dd .berth-dd-name {
-      display: block; flex: none; max-width: 100%; font-size: 12px; font-weight: 600;
+      flex: 0 1 auto; min-width: 0; font-size: 12px; font-weight: 600; color: var(--blue);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
     }
-    /* 收起态：面板作为一个组件收在窄栏内（width:100%=88px），不向右伸出被 BrowserView 盖住 */
-    body.collapsed .berth-dd-panel { left: 0; width: 100%; }
-    body.collapsed .berth-dd-item { justify-content: center; gap: 0; padding: 0 4px; }
-    body.collapsed .berth-dd-item > span:first-child { display: none; }
-    body.collapsed .berth-dd-item .berth-dd-check { display: none; }
-    body.collapsed .berth-dd-item .berth-dd-item-name { text-align: center; }
-    body.collapsed .berth-dd-new { justify-content: center; }
+    body.collapsed .berth-dd .berth-dd-caret { display: inline; font-size: 9px; color: var(--blue); opacity: .75; }
+    /* 收起态：面板 = 窄栏内 macOS 菜单风格（左对齐、✓ 勾选、选中项浅蓝底） */
+    body.collapsed .berth-dd-panel {
+      left: 0; top: 34px; margin-top: 0; width: 100%; padding: 5px; border-radius: 12px;
+      box-shadow: 0 10px 32px rgba(15, 37, 74, .2);
+    }
+    body.collapsed .berth-dd-item { justify-content: flex-start; gap: 6px; height: 30px; padding: 0 9px; }
+    body.collapsed .berth-dd-item.active { background: #E9F0FD; }
+    body.collapsed .berth-dd-item .berth-dd-check { width: 12px; }
+    body.collapsed .berth-dd-item .berth-dd-item-name { text-align: left; font-weight: 500; }
+    body.collapsed .berth-dd-new { justify-content: flex-start; padding: 0 9px; border-top: none; margin-top: 4px; border-radius: 7px; }
 
     .add-btn {
       width: 100%; height: 36px; border: none;
