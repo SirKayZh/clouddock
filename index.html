@@ -140,7 +140,9 @@
     /* ---------- 侧边栏收起（窄栏只显示头像，宽度须与主进程 RAIL_W=88 一致） ---------- */
     #sidebar { transition: none; }
     body.collapsed #sidebar { width: 88px; }
-    body.collapsed .sb-header { padding: 38px 0 0; justify-content: center; }
+    body.collapsed .sb-header { padding: 44px 0 0; justify-content: center; }
+    /* 收起态隐藏顶部云形 logo（用户反馈：工作区切换处不需要 icon，logo 与工作区名视觉连体易混淆） */
+    body.collapsed .sb-brand { display: none; }
     body.collapsed .sb-title,
     body.collapsed .acc-info,
     body.collapsed .acc-hint,
@@ -162,12 +164,26 @@
     body.collapsed .acc-item.active .acc-label { color: var(--blue); font-weight: 600; }
     body.collapsed .sb-list { padding: 6px 0; }
     body.collapsed .sb-footer { padding: 10px; }
-    /* 窄栏：工作区 chips 只显示图标，纵向排布 */
-    body.collapsed .sb-berths { padding: 0 0 10px; }
-    body.collapsed .berth-dd { width: 34px; height: 34px; justify-content: center; padding: 0; border-radius: 10px; font-size: 16px; }
-    body.collapsed .berth-dd .berth-dd-name, body.collapsed .berth-dd .berth-dd-caret { display: none; }
-    /* 收起态面板从窄栏左侧弹出，宽度独立于 34px 控件 */
-    body.collapsed .berth-dd-panel { left: 10px; width: 170px; }
+    /* 工作区控件不显示 icon（节省空间，用户要求）：只显示名字 */
+    .berth-dd > span:first-child { display: none; }
+    /* 窄栏：工作区控件仅显示工作区名字，单行居中 */
+    body.collapsed .sb-berths { padding: 0 8px 10px; }
+    body.collapsed .berth-dd {
+      flex-direction: column; justify-content: center;
+      width: 100%; height: auto; padding: 5px 0; border-radius: 10px; font-size: 12px;
+    }
+    body.collapsed .berth-dd .berth-dd-caret { display: none; }
+    body.collapsed .berth-dd .berth-dd-name {
+      display: block; flex: none; max-width: 100%; font-size: 12px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+    }
+    /* 收起态：面板作为一个组件收在窄栏内（width:100%=88px），不向右伸出被 BrowserView 盖住 */
+    body.collapsed .berth-dd-panel { left: 0; width: 100%; }
+    body.collapsed .berth-dd-item { justify-content: center; gap: 0; padding: 0 4px; }
+    body.collapsed .berth-dd-item > span:first-child { display: none; }
+    body.collapsed .berth-dd-item .berth-dd-check { display: none; }
+    body.collapsed .berth-dd-item .berth-dd-item-name { text-align: center; }
+    body.collapsed .berth-dd-new { justify-content: center; }
 
     .add-btn {
       width: 100%; height: 36px; border: none;

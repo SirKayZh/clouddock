@@ -137,7 +137,24 @@ if (!process.env.WORKPIER_DATA_DIR) {
     const appData = app.getPath('appData');
     const legacyDir = path.join(appData, 'CloudDock');
     const newDir = path.join(appData, 'WorkPier');
-    if (fs.existsSync(path.join(legacyDir, 'accounts.json')) && !fs.existsSync(path.join(newDir, 'accounts.json'))) {
+    /*
+     * 防误迁保护（2026-10-22 事故修复）：曾出现 WorkPier 目录意外缺失后，
+     * 仅剩一个测试账号的 CloudDock 残迹被当作「历史数据」整体搬入，真实数据二次丢失。
+     * 新规则：WorkPier 侧只要存在任一 v2 特征文件（accounts/berths/credentials/ui）即视为
+     * 「已升级过，绝不迁移」；CloudDock 侧必须读到真实账号才可迁；迁移前先把 legacy 完整
+     * 复制备份到 temp（防 rename 中途失败丢数据）。
+     */
+    const v2Signals = ['accounts.json', 'berths.json', 'credentials.json', 'ui.json']
+      .map((n) => path.join(newDir, n))
+      .filter((p) => fs.existsSync(p));
+    let legacyHasAccounts = false;
+    try {
+      const legacyAcc = JSON.parse(fs.readFileSync(path.join(legacyDir, 'accounts.json'), 'utf-8'));
+      legacyHasAccounts = Array.isArray(legacyAcc) && legacyAcc.length > 0;
+    } catch {
+      legacyHasAccounts = false;
+    }
+    if (legacyHasAccounts && v2Signals.length === 0 && !fs.existsSync(path.join(newDir, 'accounts.json'))) {
       if (fs.existsSync(newDir)) {
         const trash = path.join(app.getPath('temp'), `workpier-skeleton-${Date.now()}`);
         fs.renameSync(newDir, trash);

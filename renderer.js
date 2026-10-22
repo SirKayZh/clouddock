@@ -123,7 +123,8 @@ function renderBerths() {
   });
   const add = document.createElement('button');
   add.className = 'berth-dd-new';
-  add.textContent = '＋ 新建工作区';
+  // 收起态面板仅 88px 宽，长文案放不下
+  add.textContent = document.body.classList.contains('collapsed') ? '＋ 新建' : '＋ 新建工作区';
   add.addEventListener('click', () => startBerthCreate(add));
   panel.appendChild(add);
   els.berthBar.appendChild(panel);
