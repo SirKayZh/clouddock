@@ -51,6 +51,8 @@ const PENDING_NOTE = '登录后自动识别账号';
 const SIDEBAR_W = 232;
 /** 收起后的窄栏宽度（只显示头像，须容纳 macOS 红绿灯；与 index.html body.collapsed 一致） */
 const RAIL_W = 88;
+/** Windows：自绘标题栏模式（titleBarStyle hidden + renderer 自绘最小化/最大化/关闭） */
+const IS_WIN = process.platform === 'win32';
 let sidebarCollapsed = false;
 function sidebarW(): number {
   return sidebarCollapsed ? RAIL_W : SIDEBAR_W;
@@ -1733,6 +1735,17 @@ function registerIpc(): void {
   // 当前工作区的账号（工作区过滤后的视图；主进程是唯一过滤口径）
   ipcMain.handle('accounts:list', () => visibleAccounts());
 
+  // Windows 自绘标题栏的窗口控制（macOS 红绿灯走系统，不经此通道）
+  ipcMain.on('win:control', (_e, action: unknown) => {
+    if (!win) return;
+    const act = String(action);
+    if (act === 'minimize') win.minimize();
+    else if (act === 'maximize') {
+      if (win.isMaximized()) win.unmaximize();
+      else win.maximize();
+    } else if (act === 'close') win.close();
+  });
+
   ipcMain.handle('accounts:add', (_e, name: unknown, note: unknown): Account => {
     // 无需手动输入：新建独立会话并打开起始页，选站点登录后自动命名
     const manualName = String(name ?? '').trim().slice(0, 30);
@@ -2249,8 +2262,10 @@ function createWindow(): void {
     height: 900,
     minWidth: 1024,
     minHeight: 640,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 18 },
+    // macOS：hiddenInset + 系统红绿灯；Windows：hidden 全自绘（renderer 补窗口控制按钮）
+    ...(IS_WIN
+      ? { titleBarStyle: 'hidden' as const }
+      : { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 18 } }),
     backgroundColor: '#F5F7FA',
     show: false,
     webPreferences: {
@@ -2259,6 +2274,11 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   });
+  if (IS_WIN) {
+    // Windows 菜单栏不常驻（Alt 呼出，Chrome 同款）；快捷键仍然全局生效
+    win.setAutoHideMenuBar(true);
+    win.setMenuBarVisibility(false);
+  }
   win.loadFile(path.join(__dirname, '..', 'index.html'));
   win.once('ready-to-show', () => {
     win?.show();
@@ -2269,6 +2289,15 @@ function createWindow(): void {
       } catch {
         /* 写失败由老实例 30s 超时回滚兜底 */
       }
+      // Windows 更新流程没有「老实例收尾删除」：10s 后自行清理握手 token 文件
+      // （macOS 双删无害；10s 足够老实例的 500ms 轮询命中）
+      setTimeout(() => {
+        try {
+          fs.rmSync(updateToken, { force: true });
+        } catch {
+          /* ignore */
+        }
+      }, 10_000).unref?.();
       retrySingleInstanceLock();
     }
   });

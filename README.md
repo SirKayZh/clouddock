@@ -62,9 +62,22 @@
 npm run package        # 除 release/WorkPier.app 外，同时产出：
 #   release/WorkPier-<版本>-update.zip   更新包
 #   release/update.json                   清单（version / zip / sha256）
+./scripts/package-win.sh   # Windows x64 portable 包，同时把 win_zip / win_sha256 合并进 update.json
 ```
 
 把 `update.zip` 与 `update.json` 放到任意静态目录或 HTTP 服务器，应用内「检查更新…」首次使用时选择 `update.json`（可放目录，自动识别），此后记住更新源（`settings.json` 的 `updateFeed`，也支持直接填 URL）。下载后逐字节校验 SHA-256，不符立即中止；`ditto` 解包并剥离 quarantine 后原子替换，新版窗口就绪才放行退出，30 秒未握手自动回滚并弹窗告知。
+
+## Windows 版
+
+| 事项 | 说明 |
+|---|---|
+| 安装形态 | portable zip：解压到任意目录（如 `D:\WorkPier`），双击 `WorkPier\WorkPier.exe` 即用；免安装、免管理员、不写注册表。Windows 10 1803+ |
+| 快捷键 | 与 macOS 同一套，`⌘` 对应 `Ctrl`（界面提示按平台自动切换），如 `Ctrl+T` 新标签页、`Ctrl+1~9` 切账号 |
+| 窗口 | 自绘标题栏（工具栏右上最小化/最大化/关闭，双击工具栏最大化），无系统标题栏 |
+| 密码库 | 主密钥经 **DPAPI（CurrentUser）** 加密后存于 `%APPDATA%\WorkPier\master-key.bin`——只在本 Windows 用户账户下可解密，效果与 macOS 钥匙串等价；密文仍在 `credentials.json`，绝不落明文 |
+| 自更新 | 同一份 `update.json`（`win_zip` / `win_sha256` 字段）：下载校验后由生成的 `apply-update.cmd` 在应用退出后双版本换目录（`WorkPier.previous` 回滚保障）并拉起新版 |
+| 打包 | macOS 上交叉打包（`scripts/package-win.sh`）：electron 官方 win32-x64 运行时 + `resources/app` + exe 改名（isPackaged 判定与 macOS 同源）+ 图标/版本信息（`scripts/patch-win-exe.mjs`，纯 JS resedit，无需 wine） |
+| 数据位置 | `%APPDATA%\WorkPier\`（accounts.json / credentials.json / master-key.bin / Partitions\） |
 
 ## 数据位置（macOS）
 

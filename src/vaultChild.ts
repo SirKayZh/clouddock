@@ -8,10 +8,15 @@
  *    与 never 列表（仅 accountId+origin，非敏感），用于菜单展示与去重判断；
  *  - 解密后的 FillPayload 只会发往发起 cred:get 的页面注入脚本（经主进程透传，不落盘）。
  *
- * 钥匙串命名迁移（Chrome keychain-access-groups 命名规范的本地版）：
- *  - 新服务名 com.clouddock.credentials.v1；
- *  - 首次启动读到旧条目（CloudDock Credential Key）时，把同一密钥写入新服务名，
- *    密文无需重新加密；旧条目保留不删，防止用户在旧版本间来回切换丢数据。
+ * 主密钥后端（按平台）：
+ *  - macOS：登录钥匙串（/usr/bin/security，系统签名二进制）。
+ *    钥匙串命名迁移（Chrome keychain-access-groups 命名规范的本地版）：
+ *    新服务名 com.clouddock.credentials.v1；首次启动读到旧条目（CloudDock Credential Key）
+ *    时把同一密钥写入新服务名，密文无需重新加密；旧条目保留不删。
+ *  - Windows：DPAPI（DataProtectionScope=CurrentUser）加密后落 userData/master-key.bin。
+ *    与钥匙串等价的安全边界：密钥密文只在本 Windows 用户账户下可解密，换用户/拷盘均不可读。
+ *    经系统 PowerShell 的 System.Security.ProtectedData 调用（与 security/ditto 一致的
+ *    供应链原则：只用系统组件，不引入第三方原生模块）。
  *
  * soft-delete 原则：init 永远不删除磁盘上的密文。账号列表对不上的条目只在
  * 展示层（meta）隐藏；真正的删除只发生在用户显式删除账号（drop-account）时。
@@ -43,6 +48,8 @@ const LEGACY_KEY_SERVICE = 'CloudDock Credential Key';
 const KEY_ACCOUNT = 'clouddock';
 /** 测试钩子：替换 security 二进制路径（仅 vitest 使用，生产环境恒为系统 security） */
 const SECURITY_BIN = process.env.WORKPIER_VAULT_SECURITY_BIN ?? '/usr/bin/security';
+/** 测试钩子：替换 PowerShell 二进制路径（Windows DPAPI 调用，仅 vitest 使用） */
+const POWERSHELL_BIN = process.env.WORKPIER_VAULT_POWERSHELL_BIN ?? 'powershell.exe';
 const MAX_ENTRIES_PER_ACCOUNT = 500;
 
 let userDataDir = '';
@@ -53,7 +60,9 @@ let masterKey: Buffer | null = null;
 /** 正在写盘的入口保护：避免 save 与 prune 并发交错写坏文件（单进程内顺序化足够） */
 let saveQueued = false;
 
-/* ---------- 钥匙串 ---------- */
+/* ---------- 平台密钥后端 ---------- */
+
+/* -- macOS：登录钥匙串 -- */
 
 function keychainRead(service: string): Buffer | null {
   try {
@@ -83,9 +92,74 @@ function keychainWrite(service: string, key: Buffer): boolean {
   }
 }
 
-/** 取主密钥：新服务名 → 旧服务名迁移 → 全新创建。失败返回 null（上层禁用功能，绝不明文降级） */
+/* -- Windows：DPAPI（CurrentUser）加密主密钥后落 userData/master-key.bin -- */
+
+function masterKeyFile(): string {
+  return path.join(userDataDir, 'master-key.bin');
+}
+
+/**
+ * DPAPI 加解密一次调用：输入/输出均为原始字节，经 base64 走 PowerShell 的 stdin/stdout。
+ * protect=true → Protect（加密）；false → Unprotect（解密）。失败返回 null（上层禁用功能）。
+ * PowerShell 冷启动约数百毫秒，主密钥有进程内缓存，每次运行至多各调一次。
+ */
+function dpapi(blob: Buffer, protect: boolean): Buffer | null {
+  const script =
+    'Add-Type -AssemblyName System.Security; ' +
+    '$i=[Console]::In.ReadToEnd().Trim(); ' +
+    '$b=[Convert]::FromBase64String($i); ' +
+    '$o=[Security.Cryptography.ProtectedData]::' +
+    (protect ? 'Protect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)' : 'Unprotect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)') +
+    '; [Console]::Out.Write([Convert]::ToBase64String($o))';
+  try {
+    const out = execFileSync(
+      POWERSHELL_BIN,
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { input: blob.toString('base64'), encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 30_000 },
+    ).trim();
+    const buf = Buffer.from(out, 'base64');
+    return buf.length > 0 ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 取主密钥。失败返回 null（上层禁用功能，绝不明文降级） */
 function ensureMasterKey(): Buffer | null {
   if (masterKey) return masterKey;
+  if (process.platform === 'win32') {
+    // DPAPI 后端：读密钥文件 → 解密；文件缺失/损坏/不可解 → 全新生成。
+    // 密钥文件损坏时旧密文全部视为「未保存」（与 macOS 钥匙串丢失语义一致）
+    if (!userDataDir) return null;
+    const file = masterKeyFile();
+    try {
+      if (fs.existsSync(file)) {
+        const key = dpapi(fs.readFileSync(file), false);
+        if (key && key.length === 32) {
+          masterKey = key;
+          return key;
+        }
+      }
+    } catch {
+      /* fallthrough：重新生成 */
+    }
+    const fresh = randomBytes(32);
+    const enc = dpapi(fresh, true);
+    if (!enc) return null;
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, enc, { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } catch {
+      return null;
+    }
+    // 回读校验（防半写/DPAPI 环境异常），对不上宁可禁用也不带病上线
+    const verify = dpapi(fs.readFileSync(file), false);
+    if (!verify || !verify.equals(fresh)) return null;
+    masterKey = fresh;
+    return fresh;
+  }
   if (process.platform !== 'darwin') return null;
   let key = keychainRead(KEY_SERVICE);
   if (!key) {

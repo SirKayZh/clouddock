@@ -187,3 +187,139 @@ describe('vaultChild（fake security 驱动，不碰真实钥匙串）', () => {
     expect(ci.same).toBe(true);
   });
 });
+
+/* ---------- Windows 分支：DPAPI 后端（fake powershell 恒等变换） ---------- */
+
+/** powershell 替身：恒等变换（base64 in → 同值 out），足够驱动 DPAPI 后端的文件/密钥流程 */
+const FAKE_POWERSHELL = `#!/bin/bash
+cat
+`;
+
+/**
+ * 以 win32 平台身份加载 vaultChild（process.platform mock + fake powershell 注入）。
+ * macOS 上无法真调 DPAPI，恒等替身验证的是：密钥文件读写/校验/重生成/密文往返全链路。
+ */
+async function loadVaultWin(psDir: string): Promise<{ ask: (op: string, extra?: Record<string, unknown>) => Promise<Record<string, any>> }> {
+  const bin = path.join(psDir, 'fake-powershell');
+  fs.writeFileSync(bin, FAKE_POWERSHELL, { mode: 0o755 });
+  process.env.WORKPIER_VAULT_POWERSHELL_BIN = bin;
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+  const port = new EventEmitter();
+  (process as unknown as { parentPort: unknown }).parentPort = {
+    on: (ev: string, fn: (e: { data: unknown }) => void) => {
+      port.on(ev, fn);
+    },
+    postMessage: (msg: VaultReply) => {
+      port.emit('reply', msg);
+    },
+  };
+  vi.resetModules();
+  await import('../src/vaultChild');
+
+  let seq = 0;
+  const ask = (op: string, extra: Record<string, unknown> = {}): Promise<Record<string, any>> =>
+    new Promise((resolve) => {
+      const id = ++seq;
+      const h = (m: VaultReply): void => {
+        if (m.id === id) {
+          port.off('reply', h);
+          resolve(m.result as Record<string, any>);
+        }
+      };
+      port.on('reply', h);
+      port.emit('message', { data: { id, op, ...extra } });
+    });
+  return { ask };
+}
+
+describe('vaultChild（Windows DPAPI 分支，不碰真实系统）', () => {
+  let dir: string;
+  let psDir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wpvaultw-'));
+    psDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wpps-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(psDir, { recursive: true, force: true });
+    delete process.env.WORKPIER_VAULT_POWERSHELL_BIN;
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+  });
+
+  it('init + save + decrypt 往返；主密钥经 DPAPI 加密落盘 master-key.bin', async () => {
+    const { ask } = await loadVaultWin(psDir);
+    const init = await ask('init', { userDataDir: dir, accountIds: ['acc-1'] });
+    expect(init.available).toBe(true);
+    // 密钥文件存在且非 32 字节裸密钥（DPAPI blob 包装；fake 恒等时 = 32B 密钥的 base64）
+    const keyFile = path.join(dir, 'master-key.bin');
+    expect(fs.existsSync(keyFile)).toBe(true);
+    expect(fs.statSync(keyFile).size).toBeGreaterThan(0);
+
+    const save = await ask('save', {
+      accountId: 'acc-1',
+      origin: 'https://a.com',
+      label: 'u1',
+      login: { fields: ['u1'], password: 'p@ss' },
+    });
+    expect(save.ok).toBe(true);
+    const dec = await ask('decrypt', { accountId: 'acc-1', origin: 'https://a.com' });
+    expect(dec.payload).toEqual({ fields: ['u1'], password: 'p@ss' });
+  });
+
+  it('主密钥落盘复用：重新 init（模拟重启）仍能解密旧密文', async () => {
+    const { ask: ask1 } = await loadVaultWin(psDir);
+    await ask1('init', { userDataDir: dir, accountIds: ['acc-1'] });
+    await ask1('save', { accountId: 'acc-1', origin: 'https://a.com', label: 'u1', login: { fields: ['u1'], password: 'keep' } });
+    const { ask: ask2 } = await loadVaultWin(psDir);
+    const init = await ask2('init', { userDataDir: dir, accountIds: ['acc-1'] });
+    expect(init.available).toBe(true);
+    expect(init.meta.entries).toHaveLength(1);
+    const dec = await ask2('decrypt', { accountId: 'acc-1', origin: 'https://a.com' });
+    expect(dec.payload).toEqual({ fields: ['u1'], password: 'keep' });
+  });
+
+  it('🔴 密钥文件损坏 → 重新生成密钥，旧密文视为未保存（绝不明文降级）', async () => {
+    const { ask } = await loadVaultWin(psDir);
+    await ask('init', { userDataDir: dir, accountIds: ['acc-1'] });
+    await ask('save', { accountId: 'acc-1', origin: 'https://a.com', label: 'u1', login: { fields: ['u1'], password: 'old' } });
+    // 破坏密钥文件（伪 DPAPI blob，fake 解不出 32B 密钥）
+    fs.writeFileSync(path.join(dir, 'master-key.bin'), Buffer.from('garbage-not-a-key'));
+    const { ask: ask2 } = await loadVaultWin(psDir);
+    const init = await ask2('init', { userDataDir: dir, accountIds: ['acc-1'] });
+    expect(init.available).toBe(true); // 新密钥已重新生成
+    // 旧密文用新密钥解不开 → payload 为 null（视为未保存），但磁盘密文保留
+    const dec = await ask2('decrypt', { accountId: 'acc-1', origin: 'https://a.com' });
+    expect(dec.payload).toBeNull();
+    expect(readDisk(dir).entries).toHaveLength(1);
+  });
+
+  it('PowerShell 不可用 → available=false（功能禁用，不生成明文密钥）', async () => {
+    // 指向不存在的 powershell 替身
+    process.env.WORKPIER_VAULT_POWERSHELL_BIN = path.join(psDir, 'no-such-bin');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const port = new EventEmitter();
+    (process as unknown as { parentPort: unknown }).parentPort = {
+      on: (ev: string, fn: (e: { data: unknown }) => void) => port.on(ev, fn),
+      postMessage: (msg: VaultReply) => port.emit('reply', msg),
+    };
+    vi.resetModules();
+    await import('../src/vaultChild');
+    const ask = (op: string): Promise<Record<string, any>> =>
+      new Promise((resolve) => {
+        const id = 1;
+        const h = (m: VaultReply): void => {
+          if (m.id === id) {
+            port.off('reply', h);
+            resolve(m.result as Record<string, any>);
+          }
+        };
+        port.on('reply', h);
+        port.emit('message', { data: { id, op, userDataDir: dir, accountIds: ['acc-1'] } });
+      });
+    const init = await ask('init');
+    expect(init.available).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'master-key.bin'))).toBe(false);
+  });
+});

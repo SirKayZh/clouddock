@@ -1,5 +1,36 @@
 'use strict';
 
+/* ---------- 平台适配（Windows） ---------- */
+
+const IS_WIN = window.api.platform === 'win32';
+/** 快捷键提示文案：macOS ⌘ 系列 → Windows Ctrl 系列（⇧→Shift+、⌥→Alt+） */
+function modHint(s) {
+  if (!IS_WIN) return s;
+  return String(s)
+    .replace(/⌘⇧/g, 'Ctrl+Shift+')
+    .replace(/⌘⌥/g, 'Ctrl+Alt+')
+    .replace(/⌘/g, 'Ctrl+');
+}
+
+if (IS_WIN) {
+  document.body.classList.add('win');
+  // 静态 title / 文案里的 ⌘ 提示按平台替换
+  document.querySelectorAll('[title*="⌘"]').forEach((el) => {
+    el.title = modHint(el.title);
+  });
+  const tip = document.querySelector('.sb-tip');
+  if (tip) tip.textContent = modHint(tip.textContent);
+  // Windows 自绘窗口控制
+  document.getElementById('wcMin').addEventListener('click', () => window.api.winControl('minimize'));
+  document.getElementById('wcMax').addEventListener('click', () => window.api.winControl('maximize'));
+  document.getElementById('wcClose').addEventListener('click', () => window.api.winControl('close'));
+  // 工具栏双击最大化/还原（Windows 标题栏惯例）
+  document.getElementById('toolbar').addEventListener('dblclick', (e) => {
+    if (e.target.closest('button, input')) return;
+    window.api.winControl('maximize');
+  });
+}
+
 const els = {
   list: document.getElementById('accountList'),
   berthBar: document.getElementById('berthBar'),
@@ -127,7 +158,7 @@ function renderTabbar() {
     const title = tab.title || '新标签页';
     el.innerHTML = `
       <span class="tab-title" title="${escapeHtml(tab.url || '')}">${escapeHtml(title)}</span>
-      <span class="tab-close" title="关闭 (⌘W)">✕</span>`;
+      <span class="tab-close" title="${modHint('关闭 (⌘W)')}">✕</span>`;
     // 与 Chrome 一致：mousedown 即切换；关闭按钮用 click
     el.addEventListener('mousedown', (e) => {
       if (e.button !== 0 || e.target.classList.contains('tab-close')) return;
@@ -248,7 +279,7 @@ function renderList() {
   state.accounts.forEach((acc, i) => {
     const item = document.createElement('div');
     item.className = 'acc-item' + (acc.id === state.activeId ? ' active' : '');
-    const hint = i < 9 ? `<span class="acc-hint">⌘${i + 1}</span>` : '';
+    const hint = i < 9 ? `<span class="acc-hint">${modHint(`⌘${i + 1}`)}</span>` : '';
     item.innerHTML = `
       <span class="acc-avatar" title="${escapeHtml(acc.name)}" style="background:${acc.color}">${escapeHtml(acc.name.slice(0, 1).toUpperCase())}</span>
       <span class="acc-label">${escapeHtml(acc.name)}</span>

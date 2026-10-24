@@ -152,7 +152,7 @@ describe('sanitizeAccount（磁盘脏数据防御）', () => {
   });
 });
 
-import { isNewerVersion, sanitizeUpdateManifest } from '../src/pure';
+import { isNewerVersion, sanitizeUpdateManifest, buildWinUpdateScript } from '../src/pure';
 
 describe('sanitizeUpdateManifest（更新清单校验）', () => {
   const ok = { version: '1.6.0', zip: 'CloudDock-1.6.0-update.zip', sha256: 'a'.repeat(64) };
@@ -172,6 +172,63 @@ describe('sanitizeUpdateManifest（更新清单校验）', () => {
     expect(sanitizeUpdateManifest({ ...ok, sha256: 'zz' })).toBeNull();
     expect(sanitizeUpdateManifest({ ...ok, zip: 'a/b.zip' })).toBeNull(); // 不允许路径分隔符
     expect(sanitizeUpdateManifest({ ...ok, zip: '' })).toBeNull();
+  });
+});
+
+describe('sanitizeUpdateManifest Windows 字段（win_zip / win_sha256）', () => {
+  const base = { version: '2.7.0', zip: 'WorkPier-2.7.0-update.zip', sha256: 'a'.repeat(64) };
+
+  it('成对出现且合法 → 通过；无 win 字段的纯 macOS 清单也照常通过', () => {
+    const m = sanitizeUpdateManifest({ ...base, win_zip: 'WorkPier-2.7.0-win-x64.zip', win_sha256: 'B'.repeat(64) });
+    expect(m?.win_zip).toBe('WorkPier-2.7.0-win-x64.zip');
+    expect(m?.win_sha256).toBe('b'.repeat(64)); // 归一小写
+    const macOnly = sanitizeUpdateManifest(base);
+    expect(macOnly?.win_zip).toBeUndefined();
+    expect(macOnly?.win_sha256).toBeUndefined();
+  });
+
+  it('🔴 半拉子字段 / 路径分隔符 / 坏 sha → 整份清单拒绝（防止装错平台的包）', () => {
+    expect(sanitizeUpdateManifest({ ...base, win_zip: 'x.zip' })).toBeNull(); // 只有 win_zip
+    expect(sanitizeUpdateManifest({ ...base, win_sha256: 'b'.repeat(64) })).toBeNull(); // 只有 win_sha256
+    expect(sanitizeUpdateManifest({ ...base, win_zip: 'a/b.zip', win_sha256: 'b'.repeat(64) })).toBeNull();
+    expect(sanitizeUpdateManifest({ ...base, win_zip: 'x.zip', win_sha256: 'zz' })).toBeNull();
+    expect(sanitizeUpdateManifest({ ...base, win_zip: '', win_sha256: 'b'.repeat(64) })).toBeNull();
+  });
+});
+
+describe('buildWinUpdateScript（Windows 更新脚本生成）', () => {
+  const opts = {
+    exe: 'C:\\Apps\\WorkPier\\WorkPier.exe',
+    bundle: 'C:\\Apps\\WorkPier',
+    backup: 'C:\\Apps\\WorkPier.previous',
+    newDir: 'C:\\Users\\k\\AppData\\Roaming\\WorkPier\\update-staging\\extracted\\WorkPier',
+    token: 'C:\\Users\\k\\AppData\\Roaming\\WorkPier\\update-ok-123.token',
+  };
+
+  it('含全部关键步骤：等待退出 → 双版本换目录 → 启动新版 → 回滚分支', () => {
+    const s = buildWinUpdateScript(opts);
+    expect(s).toContain('tasklist /FI "IMAGENAME eq WorkPier.exe"');
+    expect(s).toContain('robocopy "%OLD%" "%BAK%"');
+    expect(s).toContain('robocopy "%NEW%" "%OLD%"');
+    expect(s).toContain('--workpier-update-token');
+    expect(s).toContain(':rollback');
+    expect(s).toContain('del "%~f0"');
+    // 路径注入到 set 语句
+    expect(s).toContain(`set "EXE=${opts.exe}"`);
+    expect(s).toContain(`set "BAK=${opts.backup}"`);
+  });
+
+  it('路径中的 % 转义为 %%（防 cmd 变量展开）', () => {
+    const s = buildWinUpdateScript({ ...opts, bundle: 'C:\\Apps\\Work%1Pier' });
+    expect(s).toContain('set "OLD=C:\\Apps\\Work%%1Pier"');
+    expect(s).not.toContain('set "OLD=C:\\Apps\\Work%1Pier"');
+  });
+
+  it('CRLF 行尾（cmd 脚本规范）', () => {
+    const s = buildWinUpdateScript(opts);
+    expect(s.includes('\r\n')).toBe(true);
+    // 不允许出现裸 \n（非 CRLF 的换行）：按 CRLF 切开后每行内不得再含 \n 或 \r
+    expect(s.split('\r\n').every((line) => !line.includes('\n') && !line.includes('\r'))).toBe(true);
   });
 });
 

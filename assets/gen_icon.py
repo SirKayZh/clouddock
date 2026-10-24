@@ -84,6 +84,14 @@ def main() -> None:
     )
     print("OK:", icns)
 
+    # Windows .ico（package-win.sh 用；多尺寸一文件，Pillow 原生支持）
+    ico = os.path.join(out_dir, "workpier.ico")
+    master.save(
+        ico,
+        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
+    print("OK:", ico)
+
 
 if __name__ == "__main__":
     main()

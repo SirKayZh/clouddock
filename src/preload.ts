@@ -2,6 +2,10 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { Account, AppState, Berth } from './types';
 
 contextBridge.exposeInMainWorld('api', {
+  /** 运行平台（'darwin' | 'win32'）：渲染层据此切换 ⌘/Ctrl 文案与 Windows 自绘标题栏 */
+  platform: process.platform,
+  /** Windows 自绘标题栏的窗口控制（send 型：无返回值，不阻塞 UI 线程） */
+  winControl: (action: 'minimize' | 'maximize' | 'close'): void => ipcRenderer.send('win:control', action),
   list: (): Promise<Account[]> => ipcRenderer.invoke('accounts:list'),
   add: (name?: string, note?: string): Promise<Account> =>
     ipcRenderer.invoke('accounts:add', name, note),

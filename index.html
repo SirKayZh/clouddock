@@ -209,6 +209,23 @@
     .spin { display: inline-block; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
+    /* ---------- Windows 自绘窗口控制（仅 body.win 显示；贴工具栏最右，无圆角通栏热区） ---------- */
+    #winControls { display: none; flex: none; align-self: stretch; margin-left: 2px; margin-right: -12px; }
+    body.win #winControls { display: flex; }
+    #winControls button {
+      width: 46px; align-self: stretch; border: none; background: transparent;
+      color: #5A6678; font: inherit; cursor: default; outline: none;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #winControls button:hover { background: rgba(28, 36, 56, .08); }
+    #winControls button:active { background: rgba(28, 36, 56, .16); }
+    #winControls #wcClose:hover { background: #E81123; color: #fff; }
+    #winControls #wcClose:active { background: #C50F1F; color: #fff; }
+    #winControls svg { width: 12px; height: 12px; }
+    /* Windows 无红绿灯：侧栏头部无需 28px 顶部留白 */
+    body.win .sb-header { height: 64px; padding-top: 16px; }
+    body.win.collapsed .sb-header { padding-top: 16px; }
+
     #content { flex: 1; position: relative; }
 
     /* ---------- 保存登录信息提示条（高度须与主进程 BANNER_H=56 一致）：蓝底白字，保存=蓝，更新密码=橙 ---------- */
@@ -317,6 +334,11 @@
         <button id="navHome" class="tb-btn" title="账号首页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.2 12 4.5l8 6.7"/><path d="M6 10.2V19a1 1 0 0 0 1 1h3.5v-5h3v5H17a1 1 0 0 0 1-1v-8.8"/></svg></button>
         <input id="urlInput" placeholder="输入网址或搜索内容" spellcheck="false">
         <div id="activeBadge"></div>
+        <div id="winControls">
+          <button id="wcMin" title="最小化"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+          <button id="wcMax" title="最大化 / 还原"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="14" height="14" rx="1"/></svg></button>
+          <button id="wcClose" title="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
+        </div>
       </div>
       <div id="tabbar" style="display:none">
         <div id="tablist"></div>

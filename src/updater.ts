@@ -11,15 +11,15 @@
  *     （GitHub Releases 的 latest 稳定跳转，发版时上传 update.zip + update.json 即生效）。
  *     手动检查时 GitHub 不可达则回落文件选择器（本地测试更新流程用）
  *  2. 读 manifest → sanitizeUpdateManifest 校验 → isNewerVersion 判断
+ *     （manifest 同时描述两个平台：macOS 用 zip/sha256，Windows 用 win_zip/win_sha256）
  *  3. 下载 zip → SHA-256 流式校验（对不上立即中止，绝不安装）
- *  4. /usr/bin/ditto 解包（苹果签名二进制，与钥匙串方案一致的供应链原则）→ 剥离 quarantine
- *  5. 原子切换：旧 .app rename 为 *.previous（运行中可 rename）→ 新 .app 就位
- *     —— 磁盘上始终保留两代版本，任一时刻崩溃都能回到上一版（Chrome Versions/.39+.40 的做法）
- *  6. app.relaunch 拉起新版（携带 --workpier-update-token 参数；v1.x 老进程拉起时
- *     传的是旧名 --clouddock-update-token，均能识别），老进程原地等待握手信号：
- *     新版窗口 ready 后写 token → 老进程正常退出；30s 未握手 → 判定新版起不来，
- *     自动回滚 rename 并弹窗告知，老进程继续运行。任何时刻断电/崩溃：
- *     下次启动检查 pending-update.json 兜底清理。
+ *  4. 平台各自安装：
+ *     - macOS：/usr/bin/ditto 解包（苹果签名二进制）→ 剥离 quarantine → 原子切换
+ *       （旧 .app rename 为 *.previous）→ app.relaunch 拉起新版，老进程原地等握手：
+ *       新版窗口 ready 写 token → 老进程退出；30s 未握手自动回滚（Chrome Versions 做法）
+ *     - Windows：tar.exe 解包 → 生成 apply-update.cmd → detached 启动 → 本进程退出；
+ *       脚本等 exe 退出后 robocopy 双版本换目录（*.previous 回滚保障）→ 拉起新版
+ *  5. 任何时刻断电/崩溃：下次启动检查 pending-update.json + update-staging 兜底清理。
  *
  * 本地包（package.sh 产出）：release/WorkPier-<ver>-update.zip + release/update.json，
  * 把这两个文件放任意目录/静态服务器即可作为更新源；对外分发走 GitHub Release。
@@ -30,8 +30,8 @@ import * as path from 'node:path';
 import * as https from 'node:https';
 import * as http from 'node:http';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { sanitizeUpdateManifest, isNewerVersion, isHttpUrl } from './pure';
+import { execFile, spawn } from 'node:child_process';
+import { sanitizeUpdateManifest, isNewerVersion, isHttpUrl, buildWinUpdateScript } from './pure';
 import type { UpdateManifest } from './pure';
 
 export const UPDATE_TOKEN_ARG = '--workpier-update-token';
@@ -168,10 +168,15 @@ function rmRf(p: string): void {
   }
 }
 
-/** 正在运行的 .app bundle 根目录（Contents/MacOS/exe → 上溯三级） */
+/** 正在运行的安装根目录：macOS .app bundle（上溯三级）；Windows portable 目录（exe 所在目录） */
 export function appBundlePath(): string | null {
   if (!app.isPackaged) return null;
   const exe = process.execPath;
+  if (process.platform === 'win32') {
+    // portable 布局：<bundle>/WorkPier.exe（打包时已从 Electron.exe 改名，isPackaged 判定同源）
+    if (path.basename(exe).toLowerCase() !== 'workpier.exe') return null;
+    return path.dirname(exe);
+  }
   // <bundle>/Contents/MacOS/<name>
   const macos = path.dirname(exe);
   const contents = path.dirname(macos);
@@ -188,16 +193,24 @@ function pendingUpdateFile(): string {
  * 新实例启动时调用：处理上一次更新遗留。
  *  - pending.to == 当前版本 → 更新成功：清掉 pending（.previous 保留，作为双版本回滚保障）
  *  - 版本不匹配 → 上次更新已被回滚，pending 是残渣：清掉
+ *  - 顺带清理 update-staging（Windows 更新脚本搬走新目录后的 zip/extracted 残留；
+ *    macOS 路径解包前也 rmRf，此处兜底崩溃中断的场景）
  */
 export function reconcilePendingUpdate(): void {
   try {
     const file = pendingUpdateFile();
-    if (!fs.existsSync(file)) return;
-    const pending = JSON.parse(fs.readFileSync(file, 'utf-8')) as { to?: unknown };
-    if (pending.to === app.getVersion()) {
-      console.log(`[workpier] update to ${app.getVersion()} verified`);
+    if (fs.existsSync(file)) {
+      const pending = JSON.parse(fs.readFileSync(file, 'utf-8')) as { to?: unknown };
+      if (pending.to === app.getVersion()) {
+        console.log(`[workpier] update to ${app.getVersion()} verified`);
+      }
+      fs.rmSync(file, { force: true });
     }
-    fs.rmSync(file, { force: true });
+  } catch {
+    /* ignore */
+  }
+  try {
+    rmRf(path.join(app.getPath('userData'), 'update-staging'));
   } catch {
     /* ignore */
   }
@@ -243,10 +256,14 @@ async function loadManifest(feed: string): Promise<ManifestLoadResult> {
 }
 
 /**
- * 安装核心（下载 → SHA-256 校验 → 解包 → 原子切换 → relaunch 握手 → 失败回滚）。
+ * 安装核心：下载 → SHA-256 校验 → 平台各自的切换与重启。
+ *  - macOS：解包 → 原子切换 → relaunch 握手（老进程在场监督，30s 超时自动回滚）
+ *  - Windows：解包 → 生成 apply-update.cmd → detached 启动 → 本进程退出；
+ *    脚本等本进程退出后换目录并拉起新版（Windows 文件锁决定老进程不能在场监督，
+ *    回滚改由脚本自身完成；pending-update.json 兜底语义两平台一致）
  * 手动/自动两个入口共用；失败场景自行弹窗，不影响当前版本运行。
- * preExit：老进程握手成功后、process.exit(0) 前的清理钩子
- * （app.exit/process.exit 都不触发 before-quit，保存状态与清运行标记必须由钩子完成）。
+ * preExit：老进程退出前钩子（app.exit/process.exit 都不触发 before-quit，
+ * 保存状态与清运行标记必须由钩子完成）。
  */
 async function downloadAndInstall(
   bundle: string,
@@ -255,6 +272,10 @@ async function downloadAndInstall(
   manifestUrl: string,
   preExit: () => void,
 ): Promise<void> {
+  if (process.platform === 'win32') {
+    await downloadAndInstallWin(bundle, feed, manifest, manifestUrl, preExit);
+    return;
+  }
   const staging = path.join(app.getPath('userData'), 'update-staging');
   rmRf(staging);
   fs.mkdirSync(staging, { recursive: true });
@@ -326,15 +347,92 @@ async function downloadAndInstall(
   }
 }
 
-/** 自更新前提：已打包 + macOS .app bundle 运行形态。返回 bundle 路径，不满足弹窗说明并返回 null */
+/* ---------- Windows 安装流程 ---------- */
+
+/**
+ * Windows 更新：下载 win_zip → SHA-256 校验 → tar.exe 解包 → 生成 apply-update.cmd
+ * → detached 启动脚本 → 本进程立即退出。脚本等待本进程退出后换目录并拉起新版
+ * （Windows 上运行中的 exe 被文件锁锁定，不可能像 macOS 那样老进程在场监督切换；
+ * 回滚责任移交给脚本自身，pending-update.json 的兜底语义两平台一致）。
+ */
+async function downloadAndInstallWin(
+  bundle: string,
+  feed: string,
+  manifest: UpdateManifest,
+  manifestUrl: string,
+  preExit: () => void,
+): Promise<void> {
+  if (!manifest.win_zip || !manifest.win_sha256) {
+    msgBox({
+      type: 'error',
+      message: '更新源缺少 Windows 更新包',
+      detail: '该版本的 update.json 未提供 win_zip / win_sha256 字段，Windows 版暂不能自动更新，请手动下载新版本。',
+    });
+    return;
+  }
+  const staging = path.join(app.getPath('userData'), 'update-staging');
+  rmRf(staging);
+  fs.mkdirSync(staging, { recursive: true });
+  const zipPath = path.join(staging, 'update.zip');
+  const zipSrc = isHttpUrl(feed)
+    ? new URL(manifest.win_zip, manifestUrl).toString()
+    : path.join(path.dirname(manifestUrl), manifest.win_zip);
+  try {
+    await downloadTo(zipSrc, zipPath);
+    const digest = await sha256File(zipPath);
+    if (digest !== manifest.win_sha256) {
+      rmRf(staging);
+      msgBox({ type: 'error', message: '更新包校验失败', detail: 'SHA-256 不匹配，已中止安装。请检查更新源文件是否完整。' });
+      return;
+    }
+    // 解包：Windows 10+ 自带 bsdtar（tar.exe），原生支持 zip（供应链原则：只用系统组件）
+    const extractDir = path.join(staging, 'extracted');
+    fs.mkdirSync(extractDir, { recursive: true });
+    await exec('tar.exe', ['-xf', zipPath, '-C', extractDir]);
+    const top = fs
+      .readdirSync(extractDir)
+      .map((n) => path.join(extractDir, n))
+      .filter((p) => fs.existsSync(path.join(p, 'WorkPier.exe')));
+    if (top.length !== 1) throw new Error(`解包结果异常：${top.length} 个 WorkPier.exe`);
+
+    const exe = path.join(bundle, 'WorkPier.exe');
+    if (!fs.existsSync(exe)) throw new Error('当前安装目录缺少 WorkPier.exe');
+
+    const token = path.join(app.getPath('userData'), `update-ok-${Date.now()}.token`);
+    const script = path.join(staging, 'apply-update.cmd');
+    fs.writeFileSync(
+      script,
+      buildWinUpdateScript({ exe, bundle, backup: `${bundle}.previous`, newDir: top[0], token }),
+      { encoding: 'utf-8' },
+    );
+
+    // pending 标记（新版启动 reconcile：版本匹配 = 更新成功；不匹配 = 已回滚的残渣）
+    const tmp = `${pendingUpdateFile()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ to: manifest.version, ts: Date.now() }), { encoding: 'utf-8' });
+    fs.renameSync(tmp, pendingUpdateFile());
+
+    // detached 启动替换脚本后立即退出（staging 残留由新版启动时 reconcile 清理）
+    const comspec = process.env.ComSpec ?? 'cmd.exe';
+    const child = spawn(comspec, ['/c', script], { detached: true, stdio: 'ignore' });
+    child.unref();
+    preExit();
+    process.exit(0);
+  } catch (err) {
+    console.error('[workpier] update failed:', err);
+    rmRf(staging);
+    msgBox({ type: 'error', message: '更新失败', detail: `${String((err as Error).message ?? err)}\n当前版本未受影响。` });
+  }
+}
+
+/** 自更新前提：已打包 + .app bundle（macOS）或 portable 目录（Windows）运行形态。返回安装根目录，不满足弹窗说明并返回 null */
 function requireUpdatableBundle(interactive: boolean): string | null {
   if (!app.isPackaged) {
-    if (interactive) msgBox({ type: 'info', message: '开发模式不支持自更新', detail: '请用 scripts/package.sh 打包后再检查更新。' });
+    if (interactive) msgBox({ type: 'info', message: '开发模式不支持自更新', detail: '请用 scripts/package.sh（macOS）或 scripts/package-win.sh（Windows）打包后再检查更新。' });
     return null;
   }
   const bundle = appBundlePath();
-  if (!bundle || process.platform !== 'darwin') {
-    if (interactive) msgBox({ type: 'info', message: '当前安装形态不支持自更新', detail: '仅支持 macOS .app bundle 安装方式。' });
+  if (!bundle) {
+    if (interactive) msgBox({ type: 'info', message: '当前安装形态不支持自更新', detail: '仅支持 macOS .app bundle 与 Windows portable 目录安装方式。' });
     return null;
   }
   return bundle;

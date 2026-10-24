@@ -184,6 +184,13 @@ export interface UpdateManifest {
   /** zip 文件名（本地 feed = 相对 manifest 的路径；http feed = 相对 URL 或绝对 URL） */
   zip: string;
   sha256: string;
+  /**
+   * Windows 更新包（可选，win_zip / win_sha256 必须成对出现）：
+   * 与 macOS 的 zip 字段平行 —— 单一 update.json 同时描述两个平台的产物，
+   * Windows 端只认 win_* 字段，macOS 端只认 zip/sha256，互不干扰。
+   */
+  win_zip?: string;
+  win_sha256?: string;
   notes?: string;
 }
 
@@ -198,12 +205,91 @@ export function sanitizeUpdateManifest(raw: unknown): UpdateManifest | null {
   if (typeof m.zip !== 'string' || m.zip.length === 0 || m.zip.length > 200) return null;
   if (/[/\\]/.test(m.zip)) return null;
   if (typeof m.sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(m.sha256)) return null;
+  let winZip: string | undefined;
+  let winSha: string | undefined;
+  if (m.win_zip !== undefined || m.win_sha256 !== undefined) {
+    // 字段出现就必须成对且合法（半拉子 win 字段直接判整份清单无效，防止装错包）
+    if (typeof m.win_zip !== 'string' || m.win_zip.length === 0 || m.win_zip.length > 200) return null;
+    if (/[/\\]/.test(m.win_zip)) return null;
+    if (typeof m.win_sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(m.win_sha256)) return null;
+    winZip = m.win_zip;
+    winSha = m.win_sha256.toLowerCase();
+  }
   return {
     version: m.version,
     zip: m.zip,
     sha256: m.sha256.toLowerCase(),
+    win_zip: winZip,
+    win_sha256: winSha,
     notes: typeof m.notes === 'string' ? m.notes.slice(0, 500) : undefined,
   };
+}
+
+/* ---------- Windows 更新脚本 ---------- */
+
+/**
+ * 生成 Windows 更新 apply-update.cmd（纯字符串拼装，可单测）。
+ * 流程（Windows 上运行中的 exe 文件被锁，不能原地覆盖 → 换目录模型）：
+ *  1. 轮询等待 WorkPier.exe（含 Chromium 子进程，镜像名相同）全部退出（最长 60s）
+ *  2. robocopy /MOVE 旧目录 → *.previous（双版本回滚保障，同 macOS .app.previous）
+ *  3. robocopy /MOVE 新目录（staging 解包产物）→ 旧目录原名
+ *  4. start 新版 exe（带更新 token）；任一步失败 → 回滚 .previous → 启动旧版
+ *  5. 脚本自删（staging 目录随旧目录被 move 走/由新版 reconcile 清理）
+ * robocopy：系统组件，跨卷安全（cmd move 跨盘失败）、退出码 <8 即成功。
+ */
+export function buildWinUpdateScript(opts: {
+  exe: string;
+  bundle: string;
+  backup: string;
+  newDir: string;
+  token: string;
+}): string {
+  const esc = (p: string): string => p.replace(/%/g, '%%');
+  const EXE = esc(opts.exe);
+  const OLD = esc(opts.bundle);
+  const BAK = esc(opts.backup);
+  const NEW = esc(opts.newDir);
+  const TOKEN = esc(opts.token);
+  return [
+    '@echo off',
+    'setlocal enableextensions',
+    `set "EXE=${EXE}"`,
+    `set "OLD=${OLD}"`,
+    `set "BAK=${BAK}"`,
+    `set "NEW=${NEW}"`,
+    `set "TOKEN=${TOKEN}"`,
+    'rem WorkPier 自更新脚本（由主进程生成）：等待退出 → 双版本换目录 → 启动新版',
+    'rem 1) 等待应用退出（最长 60s；镜像名过滤覆盖主进程与 Chromium 子进程）',
+    'set /a tries=0',
+    ':waitloop',
+    'tasklist /FI "IMAGENAME eq WorkPier.exe" 2>nul | find /I "WorkPier.exe" >nul',
+    'if errorlevel 1 goto doapply',
+    'set /a tries+=1',
+    'if %tries% geq 60 goto doapply',
+    'timeout /t 1 /nobreak >nul',
+    'goto waitloop',
+    '',
+    ':doapply',
+    'rem 2) 旧目录 → *.previous（保留一代用于回滚）',
+    'if exist "%BAK%" rmdir /s /q "%BAK%"',
+    'robocopy "%OLD%" "%BAK%" /E /MOVE /NFL /NDL /NJH /NJS /NP /R:2 /W:1 >nul',
+    'if errorlevel 8 goto rollback',
+    'rem 3) 新目录 → 原名',
+    'robocopy "%NEW%" "%OLD%" /E /MOVE /NFL /NDL /NJH /NJS /NP /R:2 /W:1 >nul',
+    'if errorlevel 8 goto rollback',
+    'rem 4) 启动新版（带更新握手 token；启动失败由用户重试，pending-update.json 兜底清理）',
+    'start "" "%EXE%" --workpier-update-token "%TOKEN%"',
+    'del "%~f0" >nul 2>&1',
+    'exit /b 0',
+    '',
+    ':rollback',
+    'rem 换目录失败：恢复旧目录并启动旧版（pending-update.json 由旧版启动时清理）',
+    'if not exist "%OLD%" robocopy "%BAK%" "%OLD%" /E /MOVE /NFL /NDL /NJH /NJS /NP /R:2 /W:1 >nul',
+    'if exist "%EXE%" start "" "%EXE%"',
+    'del "%~f0" >nul 2>&1',
+    'exit /b 0',
+    '',
+  ].join('\r\n');
 }
 
 /** 语义化版本比较：candidate 是否比 current 新（逐段数值比较） */
