@@ -217,3 +217,25 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   }
   return false;
 }
+
+/** 矩形（结构化最小定义，避免 pure.ts 依赖 electron 类型） */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 页内查找浮层的落位：网页区右上角、留 margin 间距；
+ * 网页区过窄时宽度收缩并贴左（至少保留 margin）。
+ */
+export function findbarAnchor(view: Rect, width: number, height: number, margin: number): Rect {
+  const w = Math.max(0, Math.min(width, view.width - margin));
+  return {
+    x: view.x + Math.max(0, view.width - w - margin),
+    y: view.y + margin,
+    width: w,
+    height,
+  };
+}

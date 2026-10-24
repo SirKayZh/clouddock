@@ -8,6 +8,7 @@ import {
   isHttpUrl,
   registrableDomain,
   reorderAccountsInBerth,
+  findbarAnchor,
   resolveInput,
   sanitizeAccount,
   sanitizeBerth,
@@ -281,5 +282,28 @@ describe('reorderAccountsInBerth（工作区内账号拖拽重排，v2.3）', ()
   it('0/1 个账号的区 → 无操作', () => {
     expect(reorderAccountsInBerth([mk('x1'), mk('y1', 'B')], 'B', ['y1'])).toHaveLength(2);
     expect(reorderAccountsInBerth([mk('x1')], 'B', [])).toHaveLength(1);
+  });
+});
+
+describe('findbarAnchor 搜索栏落位', () => {
+  it('常规：贴网页区右上角，留 margin', () => {
+    expect(findbarAnchor({ x: 232, y: 88, width: 1200, height: 800 }, 340, 42, 10)).toEqual({
+      x: 232 + 1200 - 340 - 10,
+      y: 98,
+      width: 340,
+      height: 42,
+    });
+  });
+
+  it('网页区过窄：宽度收缩、贴左（不溢出）', () => {
+    const r = findbarAnchor({ x: 0, y: 88, width: 200, height: 600 }, 340, 42, 10);
+    expect(r.width).toBe(190);
+    expect(r.x).toBe(0);
+  });
+
+  it('网页区宽度为 0：不产出负宽度', () => {
+    const r = findbarAnchor({ x: 0, y: 0, width: 0, height: 0 }, 340, 42, 10);
+    expect(r.width).toBe(0);
+    expect(r.x).toBe(0);
   });
 });

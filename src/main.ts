@@ -30,6 +30,7 @@ import {
   isHttpUrl,
   sanitizeAccount,
   reorderAccountsInBerth,
+  findbarAnchor,
 } from './pure';
 import { vault } from './vaultClient';
 import { checkForUpdatesInteractive, updateTokenFromArgv, reconcilePendingUpdate } from './updater';
@@ -788,6 +789,7 @@ function layoutViews(): void {
   const b = viewBounds();
   for (const view of views.values()) view.setBounds(b);
   if (berthOverlayOpen && berthOverlay) berthOverlay.setBounds(overlayBounds());
+  if (findbarOpen && findbar) findbar.setBounds(findbarAnchor(b, FINDBAR_W, FINDBAR_H, FINDBAR_MARGIN));
 }
 
 function activeWc(): WebContents | null {
@@ -942,7 +944,14 @@ function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView
 
   // ⌘1~⌘9 切换账号（仅当前工作区内的序号；其余按键交给应用菜单）
   wc.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || !input.meta) return;
+    if (input.type !== 'keyDown') return;
+    // 搜索栏打开期间，焦点回到网页后按 Esc 也要能关掉它（Chrome 行为）
+    if (findbarOpen && input.key === 'Escape') {
+      event.preventDefault();
+      closeFindbar();
+      return;
+    }
+    if (!input.meta) return;
     const m = /^Digit([1-9])$/.exec(input.code);
     if (m) {
       const target = visibleAccounts()[Number(m[1]) - 1];
@@ -951,6 +960,12 @@ function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView
         switchAccount(target.id);
       }
     }
+  });
+
+  // findInPage 的匹配进度（当前第几个/共几个）实时转发给搜索栏
+  wc.on('found-in-page', (_e, r) => {
+    if (!findbarOpen || activeWc()?.id !== wc.id) return;
+    sendFindMatches(r.activeMatchOrdinal, r.matches);
   });
 
   // 同账号下任一 tab（含后台 tab）的标题/加载状态变化都需要刷新标签栏
@@ -991,16 +1006,24 @@ function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView
     if (isHttpUrl(u)) tab.url = u;
     else if (isStartUrl(u)) tab.url = ''; // 起始页不记录文件路径
   };
+  // 导航后旧高亮已随文档销毁：搜索栏开着且有词时，在新文档里自动重查（Chrome 行为）
+  const refindAfterNav = (): void => {
+    if (findbarOpen && findText && activeWc()?.id === wc.id) runFind(findText, true, false);
+  };
   wc.on('did-navigate', () => {
     syncUrl();
     onMainNavigated(acc, wc.getURL());
     armPending(tab.id);
+    refindAfterNav();
     scheduleSave();
     refresh();
   });
   wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => {
     syncUrl();
-    if (isMainFrame) armPending(tab.id);
+    if (isMainFrame) {
+      armPending(tab.id);
+      refindAfterNav(); // SPA 路由切换后高亮同样失效
+    }
     scheduleSave();
     refresh();
   });
@@ -1015,6 +1038,7 @@ function createTabView(acc: Account, tab: Tab, prewarm = false): WebContentsView
   views.set(tab.id, view);
   if (win) {
     win.contentView.addChildView(view);
+    if (findbarOpen && findbar) win.contentView.addChildView(findbar); // 搜索栏保持在网页之上
     if (berthOverlayOpen && berthOverlay) win.contentView.addChildView(berthOverlay); // 浮层始终最顶
     view.setBounds(viewBounds());
     view.setVisible(false);
@@ -1105,6 +1129,7 @@ function switchTab(tabId: string): boolean {
   showOnly(tabId);
   view.setBounds(viewBounds());
   view.webContents.focus();
+  retargetFindbar();
   scheduleSave();
   sendState();
   return true;
@@ -1138,6 +1163,7 @@ function switchBerth(id: string): boolean {
   } else {
     // 空工作区：不显示任何账号（empty 状态），已有视图保持隐藏
     activeId = null;
+    closeFindbar(); // 没有网页可搜，搜索栏一并收起
     sendState();
   }
   scheduleUiSave(); // 热路径去抖落盘，不同步写盘
@@ -1618,6 +1644,91 @@ function requestBerthRename(id: string): void {
   if (berthOverlayOpen && berthOverlay) berthOverlay.webContents.send('overlay:rename', id);
 }
 
+/* ---------- 页内查找浮层（⌘F）----------
+ * 与 berthOverlay 同因：DOM 的 z-index 盖不住原生 WebContentsView，
+ * 搜索栏做成独立小视图，定位在网页区右上角；查找/高亮由 Chromium findInPage 完成。 */
+const FINDBAR_W = 340;
+const FINDBAR_H = 42;
+const FINDBAR_MARGIN = 10;
+
+let findbar: WebContentsView | null = null;
+let findbarOpen = false;
+/** 上次搜索词：跨标签页、跨开关保留（Chrome 查找栏行为） */
+let findText = '';
+
+function sendFindMatches(active: number, total: number): void {
+  if (findbarOpen && findbar && !findbar.webContents.isDestroyed()) {
+    findbar.webContents.send('findbar:matches', { active, total });
+  }
+}
+
+function runFind(text: string, forward: boolean, findNext: boolean): void {
+  findText = text;
+  const wc = activeWc();
+  if (!wc || wc.isDestroyed()) return;
+  if (!text) {
+    wc.stopFindInPage('clearSelection');
+    sendFindMatches(0, 0);
+    return;
+  }
+  wc.findInPage(text, { forward, findNext, matchCase: false });
+}
+
+function openFindbar(): void {
+  if (!win || win.isDestroyed() || !activeWc()) return; // 没有网页可搜
+  if (!findbar) {
+    findbar = new WebContentsView({
+      webPreferences: {
+        preload: path.join(__dirname, 'findbarPreload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    findbar.setBackgroundColor('#00000000');
+    const wc = findbar.webContents;
+    wc.on('will-navigate', (e) => e.preventDefault());
+    wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+    void wc.loadFile(path.join(__dirname, '..', 'findbar.html'));
+  }
+  findbarOpen = true;
+  win.contentView.addChildView(findbar); // 已是子视图时会被提到最顶
+  findbar.setBounds(findbarAnchor(viewBounds(), FINDBAR_W, FINDBAR_H, FINDBAR_MARGIN));
+  findbar.webContents.send('findbar:init', { text: findText });
+  findbar.webContents.focus();
+}
+
+function closeFindbar(): void {
+  if (!findbarOpen) return;
+  findbarOpen = false;
+  const wc = activeWc();
+  if (wc && !wc.isDestroyed()) wc.stopFindInPage('clearSelection');
+  if (win && !win.isDestroyed()) {
+    if (findbar) win.contentView.removeChildView(findbar);
+    if (wc && !wc.isDestroyed()) wc.focus();
+    else win.webContents.focus();
+  }
+}
+
+/** ⌘G / ⇧⌘G：栏已开 = 跳下一个/上一个；栏未开 = 用上次搜索词直接开查 */
+function findStep(forward: boolean): void {
+  if (!findText) {
+    openFindbar();
+    return;
+  }
+  const wasOpen = findbarOpen;
+  if (!wasOpen) openFindbar();
+  if (findbarOpen) runFind(findText, forward, wasOpen);
+}
+
+/** 切换标签页/账号后：清掉所有旧页高亮，同一搜索词在新活跃页重查 */
+function retargetFindbar(): void {
+  if (!findbarOpen) return;
+  for (const v of views.values()) {
+    if (!v.webContents.isDestroyed()) v.webContents.stopFindInPage('clearSelection');
+  }
+  runFind(findText, true, false);
+}
+
 function registerIpc(): void {
   // 当前工作区的账号（工作区过滤后的视图；主进程是唯一过滤口径）
   ipcMain.handle('accounts:list', () => visibleAccounts());
@@ -1730,6 +1841,20 @@ function registerIpc(): void {
   });
   ipcMain.handle('overlay:close', (e): void => {
     if (berthOverlay && e.sender === berthOverlay.webContents) closeBerthOverlay();
+  });
+
+  // 页内查找浮层：仅接受来自搜索栏自身的调用；查询词限长防滥用
+  ipcMain.handle('findbar:ready', (e): void => {
+    if (findbar && e.sender === findbar.webContents && findbarOpen) {
+      findbar.webContents.send('findbar:init', { text: findText });
+    }
+  });
+  ipcMain.handle('find:query', (e, text: unknown, forward: unknown, findNext: unknown): void => {
+    if (!findbar || e.sender !== findbar.webContents) return;
+    runFind(String(text ?? '').slice(0, 200), forward !== false, Boolean(findNext));
+  });
+  ipcMain.handle('find:close', (e): void => {
+    if (findbar && e.sender === findbar.webContents) closeFindbar();
   });
 
   // 工作区右键菜单：重命名 / 删除
@@ -2046,6 +2171,10 @@ function buildMenu(): void {
         { label: '放大', accelerator: 'CmdOrCtrl+=', click: () => zoom(0.1) },
         { label: '缩小', accelerator: 'CmdOrCtrl+-', click: () => zoom(-0.1) },
         { label: '重置缩放', accelerator: 'CmdOrCtrl+0', click: () => zoom(0) },
+        { type: 'separator' },
+        { label: '在页面中查找…', accelerator: 'CmdOrCtrl+F', click: () => openFindbar() },
+        { label: '查找下一个', accelerator: 'CmdOrCtrl+G', click: () => findStep(true) },
+        { label: '查找上一个', accelerator: 'CmdOrCtrl+Shift+G', click: () => findStep(false) },
         { type: 'separator' },
         {
           label: '开发者工具（当前标签页）',
