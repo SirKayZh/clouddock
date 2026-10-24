@@ -33,7 +33,7 @@ import {
   findbarAnchor,
 } from './pure';
 import { vault } from './vaultClient';
-import { checkForUpdatesInteractive, updateTokenFromArgv, reconcilePendingUpdate } from './updater';
+import { checkForUpdatesInteractive, checkForUpdatesOnLaunch, updateTokenFromArgv, reconcilePendingUpdate } from './updater';
 
 /*
  * 通用多账号浏览器：账号 = 一个独立会话容器，可登录任意网站。
@@ -2215,17 +2215,7 @@ function buildMenu(): void {
       submenu: [
         {
           label: '检查更新…',
-          click: () =>
-            void checkForUpdatesInteractive(() => {
-              // 更新握手成功、老进程退出前的清理（process.exit 不触发 before-quit）
-              if (saveTimer) clearTimeout(saveTimer);
-              saveAccountsNow();
-              try {
-                fs.rmSync(runningFlagFile(), { force: true });
-              } catch {
-                /* ignore */
-              }
-            }),
+          click: () => void checkForUpdatesInteractive(preUpdateExit),
         },
         { type: 'separator' },
         { role: 'about' },
@@ -2241,6 +2231,17 @@ function buildMenu(): void {
 }
 
 /* ---------- 窗口 ---------- */
+
+/** 更新握手成功、老进程退出前的清理（process.exit 不触发 before-quit；手动/自动更新共用） */
+function preUpdateExit(): void {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveAccountsNow();
+  try {
+    fs.rmSync(runningFlagFile(), { force: true });
+  } catch {
+    /* ignore */
+  }
+}
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -2361,6 +2362,9 @@ if (!gotLock) {
     applyPermissionPolicy(session.defaultSession);
     createWindow();
     schedulePrewarm(15_000);
+
+    // 启动 5s 后静默检查 GitHub 最新 Release：失败/无新版不打扰，有新版才提醒
+    setTimeout(() => void checkForUpdatesOnLaunch(preUpdateExit), 5_000).unref?.();
   });
 
   app.on('before-quit', () => {
