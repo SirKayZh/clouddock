@@ -39,6 +39,12 @@ mkdir -p "$APP/Contents/Resources/app"
 cp -R package.json dist index.html start.html overlay.html overlay.js findbar.html findbar.js renderer.js README.md "$APP/Contents/Resources/app/"
 # App 图标（assets/gen_icon.py 生成）
 cp assets/workpier.icns "$APP/Contents/Resources/workpier.icns"
+# 关键：主可执行文件必须改名（Electron → WorkPier）。
+# Electron 判定 app.isPackaged = basename(execPath).toLowerCase() !== 'electron'
+# —— 不改名则 isPackaged=false，自更新被「开发模式不支持自更新」挡掉（v2.6.0 及之前全部中招）。
+# 附带收益：主进程名变成 WorkPier，pgrep -x WorkPier 可直接判活。
+mv "$APP/Contents/MacOS/Electron" "$APP/Contents/MacOS/WorkPier"
+plutil -replace CFBundleExecutable -string "WorkPier" "$APP/Contents/Info.plist"
 plutil -replace CFBundleName -string "WorkPier" "$APP/Contents/Info.plist"
 plutil -replace CFBundleDisplayName -string "WorkPier" "$APP/Contents/Info.plist"
 plutil -replace CFBundleIdentifier -string "com.sirkayzh.workpier" "$APP/Contents/Info.plist"
